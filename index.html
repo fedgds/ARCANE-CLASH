@@ -1,0 +1,1196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Arcane Clash — Auto-Battler</title>
+<style>
+:root{
+  color-scheme: dark;
+  /* base */
+  --bg:#06070d; --bg2:#0b0e1a;
+  --ink:#e6ecff; --dim:#7d88ad; --mute:#5d688c;
+  --line:#1d2440; --line-soft:#141a2e;
+  --hot:#ff5d7a; --cool:#5fd0ff; --gold:#ffce5a;
+  /* tiers */
+  --t1:#8b96b8; --t2:#5fd0ff; --t3:#a97bff; --t4:#ff7ad9; --t5:#ffce5a;
+  /* materials */
+  --pane:linear-gradient(180deg,#0d1223f0,#080b15f0);
+  --pane-hi:inset 0 1px 0 #ffffff10;
+  --lift:0 10px 30px -18px #000, 0 2px 8px -6px #0008;
+  --focus:0 0 0 3px #4a7cf055;
+  --slotH:38px;
+  /* type */
+  --sans:"Inter",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --disp:"Space Grotesk","Inter",system-ui,sans-serif;
+  --num:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+html{height:100%}
+body{
+  min-height:100%; min-height:100dvh;
+  background:
+    radial-gradient(1100px 640px at 50% -16%, #1d2a54 0%, #131c3c 34%, transparent 70%),
+    radial-gradient(760px 460px at 6% 112%, #23123f 0%, transparent 62%),
+    radial-gradient(760px 460px at 94% 112%, #0d2437 0%, transparent 62%),
+    radial-gradient(1200px 900px at 50% 50%, #0a0d1c 0%, var(--bg) 78%),
+    var(--bg);
+  background-attachment:fixed;
+  color:var(--ink); font:14px/1.5 var(--sans);
+  display:flex; align-items:center; justify-content:center; overflow:hidden;
+  -webkit-font-smoothing:antialiased;
+  position:relative;
+}
+/* ambient arcane haze: two slow-drifting light blooms so the frame around
+   the app feels alive rather than flat black */
+body::before{
+  content:''; position:fixed; inset:-20% -10%; z-index:0; pointer-events:none;
+  background:
+    radial-gradient(420px 420px at 20% 30%, #4a7cf022, transparent 70%),
+    radial-gradient(480px 480px at 82% 68%, #ff5d7a1c, transparent 70%);
+  filter:blur(6px);
+  animation:drift 26s ease-in-out infinite alternate;
+}
+@keyframes drift{
+  from{transform:translate3d(-2%,-1%,0) scale(1)}
+  to  {transform:translate3d(3%,2%,0)   scale(1.08)}
+}
+#app{z-index:1}
+#app{width:min(1180px,100vw); height:min(760px,100dvh)}
+.screen{position:absolute; inset:0; display:none; flex-direction:column; padding:18px;
+  /* Every screen can scroll if its content outgrows the frame. Before this,
+     a tall panel was simply unreachable — clipped by the absolute inset with
+     no way to scroll to it. */
+  overflow-y:auto; overflow-x:hidden; overscroll-behavior-y:contain}
+.screen.on{display:flex; animation:screenIn .28s ease both}
+/* The battle is the one screen that must never scroll: the arena is sized to
+   the frame and the fight plays inside it. */
+#battle{overflow:hidden}
+@keyframes screenIn{from{opacity:0; transform:translateY(6px)} to{opacity:1; transform:none}}
+
+h1{font:700 clamp(32px,7.4vw,52px)/1 var(--disp); letter-spacing:-.04em; margin:0}
+h1 span{
+  background:linear-gradient(96deg,var(--cool),#a97bff 48%,var(--hot));
+  background-size:220% 100%;
+  -webkit-background-clip:text; background-clip:text; color:transparent;
+  filter:drop-shadow(0 0 30px #6a5cff55);
+  animation:sheen 9s ease-in-out infinite;
+}
+@keyframes sheen{0%,100%{background-position:0% 50%}50%{background-position:100% 50%}}
+.sub{color:#9aa4c8; margin:13px 0 0; line-height:1.5}
+.mono,.stats{font-variant-numeric:tabular-nums}
+
+/* ---------- controls ---------- */
+.btn{
+  appearance:none; border:1px solid var(--line); color:var(--ink);
+  background:linear-gradient(180deg,#151b2e,#0e1322);
+  padding:9px 16px; border-radius:10px; font:600 13px/1 var(--sans); cursor:pointer;
+  box-shadow:var(--pane-hi); letter-spacing:.01em;
+  transition:transform .08s, background .15s, border-color .15s, box-shadow .15s;
+}
+.btn:hover{background:linear-gradient(180deg,#1c2440,#131a2e); border-color:#33406e}
+.btn:active{transform:translateY(1px)}
+.btn:focus-visible{outline:none; box-shadow:var(--pane-hi), var(--focus)}
+/* tinted-dark primaries: --pri drives the hue, so the gold Delve button
+   and the blue Draft button share one recipe and both stay legible */
+.btn.pri{
+  --pri:#4a7cf0;
+  border-color:color-mix(in srgb, var(--pri) 52%, transparent);
+  background:linear-gradient(180deg,
+    color-mix(in srgb, var(--pri) 26%, #0b1120),
+    color-mix(in srgb, var(--pri) 12%, #070a14));
+  color:color-mix(in srgb, var(--pri) 42%, #ffffff);
+  box-shadow:var(--pane-hi), 0 8px 22px -14px var(--pri);
+}
+.btn.pri:hover{
+  border-color:color-mix(in srgb, var(--pri) 78%, transparent);
+  background:linear-gradient(180deg,
+    color-mix(in srgb, var(--pri) 36%, #0b1120),
+    color-mix(in srgb, var(--pri) 18%, #070a14));
+  box-shadow:var(--pane-hi), 0 10px 26px -12px var(--pri);
+}
+.btn.warn{--pri:#ff5d7a}
+.btn:disabled{opacity:.35; cursor:not-allowed; transform:none; box-shadow:none}
+.btn.seg{padding:7px 14px; font-size:12px; color:var(--dim); background:#0b0f1d}
+.btn.seg:hover{color:var(--ink)}
+.btn.seg.on{color:#fff; border-color:#4a7cf088; background:#141d3a;
+  box-shadow:var(--pane-hi), 0 0 18px -8px #4a7cf0}
+.row{display:flex; gap:10px; align-items:center}
+.grow{flex:1}
+
+/* ---------- panels ---------- */
+.panel{
+  border:1px solid var(--line); border-radius:14px; background:var(--pane);
+  padding:13px; box-shadow:var(--pane-hi), var(--lift);
+}
+.panel h3{
+  margin:0 0 10px; font:700 10px/1 var(--sans); letter-spacing:.18em;
+  text-transform:uppercase; color:var(--mute);
+  display:flex; align-items:center; gap:9px;
+}
+.panel h3::after{content:''; flex:1; height:1px;
+  background:linear-gradient(90deg,var(--line),transparent)}
+.split{display:grid; grid-template-columns:1fr 300px; gap:12px; flex:1; min-height:0}
+.scroll{overflow-y:auto}
+
+/* ---------- title ---------- */
+/* The card grew past the 760px app height once the progress panel and the
+   ghost-code row were added, and `.screen` is absolutely positioned with no
+   overflow rule — so the top of the card was simply clipped away with no way
+   to reach it. Scrolling the screen keeps the layout centred when it fits and
+   reachable when it does not. */
+#title{align-items:center; justify-content:flex-start; text-align:center;
+  overflow-y:auto; scrollbar-width: none; -ms-overflow-style: none; overscroll-behavior:contain}
+#title .card{
+  position:relative; isolation:isolate;
+  background:linear-gradient(180deg,#0c1122ee,#070a13f2);
+  border:1px solid #222c4d; border-radius:24px;
+  padding:32px 40px 30px; backdrop-filter:blur(10px); max-width:680px; width:100%;
+  box-shadow:var(--pane-hi), 0 40px 90px -44px #000, 0 0 0 1px #ffffff06,
+    inset 0 1px 0 rgba(255,255,255,.05);
+  /* `auto` on a column flex child keeps the card vertically centred while it
+     still fits, and lets it sit at the top once it is taller than the app. */
+  margin:auto;
+}
+#title .card::before{
+  content:''; position:absolute; z-index:-1; left:50%; top:-24%;
+  width:78%; height:60%; transform:translateX(-50%);
+  background:radial-gradient(60% 100% at 50% 0%,#6a5cff33,#5fd0ff14 45%,transparent 72%);
+  filter:blur(14px); pointer-events:none;
+}
+.namerow{display:flex; gap:12px; justify-content:center; margin:18px 0 4px; flex-wrap:wrap}
+.namerow label{display:flex; flex-direction:column; gap:6px; align-items:flex-start; flex:1 1 176px;
+  max-width:210px; min-width:0}
+.nameinput{
+  background:#070b16; border:1px solid var(--line); border-radius:10px; color:#e8edff;
+  padding:9px 12px; font:600 13px/1 var(--sans); letter-spacing:.07em; width:100%;
+  outline:none; box-shadow:inset 0 1px 3px #0006; transition:border-color .15s, box-shadow .15s;
+}
+.nameinput::placeholder{color:#4c5677}
+.nameinput:focus{border-color:#4a7cf0; box-shadow:inset 0 1px 3px #0006, var(--focus)}
+.legend{display:flex; gap:9px; justify-content:center; margin:18px 0 4px; flex-wrap:wrap}
+.legend b{font:700 10px/1 var(--sans); letter-spacing:.13em; text-transform:uppercase;
+  padding:5px 11px; border-radius:999px;
+  border:1px solid color-mix(in srgb,currentColor 34%,transparent);
+  background:color-mix(in srgb,currentColor 9%,#070a14);
+  box-shadow:0 0 16px -10px currentColor, inset 0 1px 0 rgba(255,255,255,.04);}
+/* Recent results: one wrapping row of pills, not six stacked table rows.
+   The stack was ~180px of the title card's height on its own and was what
+   pushed the card past the 760px frame into a scrollbar. */
+#record{margin-top:14px; text-align:left; display:flex; flex-wrap:wrap; gap:6px;
+  align-items:center; justify-content:center}
+#record:empty{display:none}
+#record > .stats{flex:1 0 100%; text-align:center; margin:0 !important}
+.hrow{display:flex; align-items:baseline; gap:7px; font-size:11px; color:#8b96bb;
+  padding:4px 10px; border:1px solid var(--line-soft); border-radius:999px;
+  background:#0b0f1bcc; white-space:nowrap}
+
+/* ---------- daily challenge ---------- */
+#daily{margin-top:16px; max-width:340px; margin-inline:auto; text-align:left;
+  border:1px solid var(--line-soft); border-radius:10px; padding:10px 12px;
+  background:linear-gradient(180deg,#0f1524,#0b0f1b)}
+#daily .dtop{display:flex; align-items:baseline; gap:8px}
+#daily .dlabel{font:700 10px/1 var(--sans); letter-spacing:.13em;
+  text-transform:uppercase; color:#7fe0a0}
+#daily .dday{font-size:10.5px; color:#5b6488; margin-left:auto}
+#daily .dstat{font-size:11.5px; color:#8b96bb; margin-top:6px}
+#daily .dstreak{display:flex; gap:12px; margin-top:7px; font-size:11px; color:#8b96bb}
+#daily .dstreak b{color:#e8ecf8}
+#daily.done .dlabel{color:#5b6488}
+
+/* ---------- discovery / delve progress on the title card ---------- */
+/* Daily + Discovery share a row; each keeps its own 340px cap so a single
+   one still looks deliberate rather than stretched. The 240px basis is
+   what makes them fit side by side inside the card's 568px content box —
+   at 300 they wrapped back into a stack and saved nothing. */
+.panelrow{display:flex; gap:10px; justify-content:center; flex-wrap:wrap;
+  align-items:stretch}
+.panelrow > *{flex:1 1 240px; max-width:340px; min-width:0}
+#progress{margin-top:16px; max-width:340px; margin-inline:auto; text-align:left;
+  border:1px solid var(--line-soft); border-radius:10px; padding:10px 12px;
+  background:linear-gradient(180deg,#0f1524,#0b0f1b)}
+#progress .ptop{display:flex; align-items:baseline; gap:8px}
+#progress .plabel{font:700 10px/1 var(--sans); letter-spacing:.13em;
+  text-transform:uppercase; color:#a97bff}
+#progress .pasc{font-size:10.5px; color:#5b6488; margin-left:auto}
+.meter{margin-top:8px}
+.meter .mlab{display:flex; justify-content:space-between; font-size:11px;
+  color:#8b96bb; margin-bottom:3px}
+.meter .mlab b{color:#e8ecf8}
+.meter .bar{height:5px; border-radius:99px; background:#151b30; overflow:hidden}
+.meter .bar i{display:block; height:100%; border-radius:99px;
+  background:linear-gradient(90deg,#5fd0ff,#a97bff); transition:width .4s ease}
+.meter.gold .bar i{background:linear-gradient(90deg,#ffce5a,#ff9f6a)}
+
+/* ---------- ascension picker (delve) ---------- */
+#ascGrid{display:grid; grid-template-columns:repeat(auto-fill,minmax(232px,1fr));
+  gap:10px; margin-top:4px}
+.asc{
+  position:relative; border:1px solid var(--line); border-radius:12px;
+  padding:11px 12px; cursor:pointer; text-align:left;
+  background:linear-gradient(180deg,#121829,#0a0e1c);
+  display:flex; flex-direction:column; gap:5px; transition:.14s;
+}
+.asc:hover{border-color:#3a4a7d; transform:translateY(-2px)}
+.asc.on{border-color:var(--ac,#ffce5a); box-shadow:0 0 0 1px var(--ac,#ffce5a)55,
+  0 0 26px -14px var(--ac,#ffce5a)}
+.asc.locked{opacity:.4; cursor:not-allowed; filter:grayscale(.7)}
+.asc.locked:hover{transform:none; border-color:var(--line)}
+.asc .an{font:750 13px/1.2 var(--sans); color:var(--ac,#ffce5a)}
+.asc .ad{font-size:11.5px; color:#98a3c6; line-height:1.38; flex:1}
+.asc .am{display:flex; align-items:center; gap:7px; font-size:10.5px; color:var(--dim)}
+.asc .tick{width:16px; height:16px; border-radius:4px; border:1px solid #33406e;
+  flex:0 0 auto; display:grid; place-items:center; font-size:10px; color:#0a0e1c}
+.asc.on .tick{background:var(--ac,#ffce5a); border-color:var(--ac,#ffce5a)}
+.asc.on .tick::after{content:'✓'; font-weight:800}
+.asc .req{font-size:10.5px; color:#ff8fae}
+
+/* ---------- codex discovery states ---------- */
+.cx.undisc, .cmb.undisc{opacity:.62}
+.cx.undisc .cxn, .cmb.undisc .cn{color:#7d88ad !important}
+.disctag{font:700 8.5px/1 var(--sans); letter-spacing:.1em; text-transform:uppercase;
+  padding:3px 6px; border-radius:5px; border:1px solid #2b355c; color:#7d88ad;
+  background:#0e142a}
+.disctag.seen{color:#7fe0a0; border-color:#2c5a3f; background:#0d1a14}
+.newtag{font:800 8.5px/1 var(--sans); letter-spacing:.1em; text-transform:uppercase;
+  padding:3px 6px; border-radius:5px; color:#0a0e1c; background:#ffce5a}
+
+/* ---------- share / build-code row ---------- */
+.coderow{display:flex; gap:7px; align-items:center; margin-top:12px; flex-wrap:wrap;
+  justify-content:center}
+.codein{
+  font:600 12px/1 var(--num); letter-spacing:.04em; color:var(--ink);
+  background:#0b101f; border:1px solid #26305a; border-radius:8px;
+  padding:9px 11px; min-width:210px; text-transform:uppercase;
+}
+.codein:focus{outline:none; box-shadow:var(--focus); border-color:#4a7cf0}
+.codein::placeholder{color:#4d5878; letter-spacing:.02em}
+
+/* ---------- draft ---------- */
+#draft{gap:12px}
+.dhead{display:flex; align-items:center; gap:14px}
+.turnpill{
+  padding:7px 15px; border-radius:999px; font:700 13px/1.15 var(--sans);
+  border:1px solid; letter-spacing:.02em;
+}
+.turnpill.p1{color:#9fd8ff; border-color:#2b5f8f; background:#0c1a2a;
+  box-shadow:0 0 22px -10px #5fd0ff}
+.turnpill.p2{color:#ffb0c8; border-color:#7a2b47; background:#241016;
+  box-shadow:0 0 22px -10px #ff5d7a}
+.gold{color:var(--gold); font-weight:800; font-variant-numeric:tabular-nums}
+.shop{display:grid; grid-template-columns:repeat(5,1fr); gap:10px}
+.card-s{
+  position:relative; border:1px solid var(--line); border-radius:13px;
+  padding:11px 11px 12px 14px; min-height:136px; cursor:pointer;
+  background:linear-gradient(180deg,#131a33,#0a0e1e);
+  display:flex; flex-direction:column; gap:6px; overflow:hidden;
+  box-shadow:var(--pane-hi);
+  transition:transform .12s, box-shadow .2s, border-color .15s;
+}
+.card-s:hover{transform:translateY(-3px); border-color:#3a4a7d;
+  box-shadow:var(--pane-hi), 0 16px 30px -18px #000, 0 0 26px -14px #5fd0ff}
+.card-s:focus-visible{outline:none; box-shadow:var(--focus)}
+.card-s.dead{opacity:.22; pointer-events:none; filter:grayscale(1)}
+.card-s .nm{font:750 14px/1.2 var(--sans); letter-spacing:-.01em}
+.card-s .tag{font:600 9.5px/1 var(--sans); letter-spacing:.13em; text-transform:uppercase; color:var(--dim)}
+.card-s .desc{font-size:11.5px; color:#98a3c6; line-height:1.38; flex:1}
+.card-s .cost{font-weight:800; font-size:12px}
+.tierbar{position:absolute; left:0; top:0; bottom:0; width:3px}
+.card-s .info{
+  position:absolute; top:7px; right:7px; width:22px; height:22px; border-radius:50%;
+  border:1px solid #33406e; background:#0e142a; color:#93a0c8;
+  font:700 11px/20px var(--sans); text-align:center; cursor:pointer; z-index:2; padding:0;
+  transition:.15s;
+}
+.card-s .info:hover{color:#fff; border-color:#4a7cf0; background:#16203f}
+.card-s.armed{border-color:#4a7cf0; box-shadow:var(--pane-hi), 0 0 0 2px #4a7cf033}
+.card-s .confirm{font:800 10px/1 var(--sans); letter-spacing:.11em; color:#8fd8ff; text-transform:uppercase}
+
+.bench{display:grid; grid-template-columns:repeat(auto-fill,minmax(168px,1fr)); gap:9px;
+  align-content:start; overflow-y:auto; padding-right:4px}
+.own{
+  border:1px solid var(--line); border-radius:11px; padding:9px 10px;
+  background:linear-gradient(180deg,#0d1325,#090d1b);
+  display:flex; flex-direction:column; gap:6px; box-shadow:var(--pane-hi);
+  transition:border-color .15s, box-shadow .18s;
+}
+.own:hover{border-color:#2c3862}
+.own .top{display:flex; justify-content:space-between; align-items:baseline; gap:6px}
+.own .nm{font:700 12.5px/1.2 var(--sans)}
+.sellb{
+  background:#141a2e; border:1px solid #2b3559; color:#93a0c8; border-radius:7px;
+  font:700 9.5px/1 var(--sans); letter-spacing:.07em; padding:5px 8px; cursor:pointer;
+  transition:.15s;
+}
+.sellb:hover{color:#ffd88a; border-color:#5a4a2a; background:#1e1a10}
+.lvl{font:800 10px/1 var(--sans); padding:3px 6px; border-radius:5px; background:#1b2445; color:#b9c6ef}
+.lvl.l2{background:#243a6b; color:#bfe0ff}
+.lvl.l3{background:linear-gradient(90deg,#6b4bbd,#b3652f); color:#fff}
+.pips{display:flex; gap:3px}
+.pip{width:100%; height:4px; border-radius:2px; background:#1a2140}
+.pip.f{background:linear-gradient(90deg,var(--cool),#a97bff); box-shadow:0 0 8px -2px #5fd0ff}
+.stats{font-size:10.5px; color:var(--dim)}
+
+/* ---------- families + combos ---------- */
+.fams{display:flex; gap:4px; flex-wrap:wrap}
+.fam{font:700 8.5px/1 var(--sans); letter-spacing:.1em; text-transform:uppercase;
+  padding:3px 5px; border-radius:4px; border:1px solid}
+.own.combo{border-color:var(--cg); box-shadow:0 0 0 1px var(--cg), 0 0 16px -3px var(--cg);
+  animation:comboPulse 2.4s ease-in-out infinite}
+@keyframes comboPulse{
+  0%,100%{box-shadow:0 0 0 1px var(--cg), 0 0 12px -3px var(--cg)}
+  50%    {box-shadow:0 0 0 1px var(--cg), 0 0 24px 0 var(--cg)}
+}
+.own .inc{font:700 9.5px/1.3 var(--sans); letter-spacing:.05em; color:var(--cg,#ffce5a)}
+.card-s.willcombo{border-color:#ffce5a55}
+.card-s.willcombo:hover{border-color:#ffce5a; box-shadow:var(--pane-hi), 0 0 26px -12px #ffce5a}
+/* the opponent's revealed loadout: readable, clearly not purchasable —
+   flatter, cooler and it does not lift on hover the way a shop card does */
+#foeBench{grid-template-columns:repeat(auto-fill,minmax(132px,1fr)); gap:7px}
+#foeBench .card-s{min-height:0; padding:9px 10px 9px 13px; gap:4px;
+  background:#0e1226; border-color:#2a3358; cursor:help}
+#foeBench .card-s:hover{transform:none; border-color:#ff8fae66}
+#foeBench .card-s .nm{font-size:12.5px}
+#foeBench .card-s .tag{font-size:9px}
+#foePanel h3{color:#ff8fae}
+.willc{font:700 9.5px/1.3 var(--sans); letter-spacing:.05em; color:#ffce5a}
+#comboBar{display:none; gap:7px; flex-wrap:wrap}
+.cbar{display:flex; flex-direction:column; gap:2px; padding:6px 11px; border-radius:9px;
+  border:1px solid; font-size:10px; background:#0a0e1c99}
+.cbar b{font-size:11px; letter-spacing:.03em}
+.cbar span{color:#8b96bb; font-size:9.5px}
+
+/* PvE reward: three cards, wider than a shop slot because there are only
+   three of them and this is the only decision on the screen. */
+#offCards{display:grid; grid-template-columns:repeat(3,1fr); gap:12px; text-align:left}
+#offCards .card-s{padding:14px 14px 14px 17px; gap:8px; min-height:160px}
+#offCards .card-s .nm{font-size:15.5px}
+#offCards .card-s .desc{font-size:12px}
+#offCards .lvl{font:800 9.5px/1 var(--sans); letter-spacing:.08em; padding:3px 6px;
+  border-radius:4px; background:#2a2410; color:#ffce5a; vertical-align:1px}
+
+/* ---------- battle ---------- */
+#battle{gap:11px}
+.hud{display:grid; grid-template-columns:1fr 120px 1fr; gap:16px; align-items:center}
+.hp{
+  position:relative; height:34px; border:1px solid var(--line); border-radius:11px;
+  background:linear-gradient(180deg,#0b1020,#06090f); overflow:hidden;
+  box-shadow:inset 0 2px 8px #000a, inset 0 0 0 1px #ffffff08;
+}
+/* the coloured fill, a soft top-gloss, and a bright leading edge that
+   tracks the bar's end so damage reads as a receding wall of light */
+.hp .fill{position:absolute; inset:0; transform-origin:left; transition:transform .12s linear}
+.hp .fill::after{
+  content:''; position:absolute; inset:0;
+  background:linear-gradient(180deg,#ffffff40 0%,#ffffff10 32%,transparent 60%);
+}
+.hp .fill::before{
+  content:''; position:absolute; top:0; bottom:0; right:0; width:3px;
+  background:#fff; box-shadow:0 0 12px 2px currentColor; opacity:.9;
+}
+.hp.p1 .fill{color:#8fe3ff; background:linear-gradient(90deg,#134a86,#2f8fd6 55%,#7fe0ff)}
+.hp.p2 .fill{color:#ffb0c8; background:linear-gradient(90deg,#8f2242,#d6396a 55%,#ff9db8)}
+/* travelling specular sweep — subtle, so the bars feel lit, not busy */
+.hp .fill{background-size:100% 100%}
+.hp .sh{position:absolute; inset:0; transform-origin:left; background:#e8f4ffcc; opacity:.5}
+/* quarter ticks: turns a smooth bar into something you can actually read */
+.hp::after{
+  content:''; position:absolute; inset:0; pointer-events:none;
+  background:repeating-linear-gradient(90deg,transparent 0 calc(25% - 1px),#00000055 calc(25% - 1px) 25%);
+  box-shadow:inset 0 1px 0 #ffffff14, inset 0 -6px 12px -6px #0008;
+}
+.hp .lab{
+  position:absolute; inset:0; display:flex; align-items:center; justify-content:space-between;
+  padding:0 13px; font:700 13px/1 var(--sans); text-shadow:0 1px 5px #000e; z-index:1;
+  letter-spacing:.04em;
+}
+.hp .lab span:first-child{text-transform:uppercase; letter-spacing:.08em}
+.hp .lab span:last-child{font-family:var(--num); font-variant-numeric:tabular-nums; font-size:13.5px}
+.hp.p1{box-shadow:inset 0 2px 8px #000a, inset 0 0 0 1px #ffffff08, 0 0 24px -14px #5fd0ff}
+.hp.p2{direction:rtl; box-shadow:inset 0 2px 8px #000a, inset 0 0 0 1px #ffffff08, 0 0 24px -14px #ff5d7a}
+.hp.p2 .lab{direction:ltr}
+.hp.p2 .fill,.hp.p2 .sh{transform-origin:right}
+.hp.p2 .fill::before{right:auto; left:0}
+.timer{
+  text-align:center; font:800 24px/1 var(--num); color:#cdd8ff;
+  font-variant-numeric:tabular-nums; letter-spacing:.02em;
+  padding:8px 0; border-radius:11px; border:1px solid #2a3560;
+  background:linear-gradient(180deg,#0f1531,#080b18);
+  box-shadow:var(--pane-hi), inset 0 -8px 16px -10px #000, 0 0 22px -14px #4a7cf0;
+  text-shadow:0 0 14px #4a7cf055;
+}
+#stage{
+  position:relative; flex:1; min-height:0; border:1px solid #2a3560;
+  border-radius:18px; overflow:hidden; background:#04060d;
+  box-shadow:inset 0 0 70px -18px #4a7cf033, var(--pane-hi),
+             0 24px 60px -34px #000, 0 0 0 1px #ffffff06;
+}
+#cv{display:block; width:100%; height:100%}
+/* vignette keeps the arena reading as a lit pit rather than a flat rectangle */
+#stage::after{
+  content:''; position:absolute; inset:0; pointer-events:none; z-index:2;
+  background:radial-gradient(120% 90% at 50% 50%, transparent 52%, #000a 100%);
+}
+/* a faint arcane rim-light traces the inside of the frame, so the arena
+   reads as a contained battle-pit with its own glow */
+#stage::before{
+  content:''; position:absolute; inset:0; pointer-events:none; z-index:2;
+  border-radius:18px;
+  box-shadow:inset 0 0 0 1px #6fa0ff1f, inset 0 2px 24px -8px #6fa0ff26;
+}
+#log{
+  height:92px; overflow:hidden; font:11.5px/1.5 var(--num); color:#8e9ac0;
+  border:1px solid #232c4c; border-radius:13px; padding:10px 14px;
+  background:linear-gradient(180deg,#0b1120e8,#070a12e8);
+  box-shadow:var(--pane-hi), inset 0 0 30px -18px #4a7cf0;
+  position:relative;
+}
+/* left accent bar marks the log as the fight's running record */
+#log::before{
+  content:''; position:absolute; left:0; top:9px; bottom:9px; width:2px;
+  border-radius:2px;
+  background:linear-gradient(180deg,#5fd0ff,#a97bff,transparent);
+  opacity:.6;
+}
+#log div{opacity:.55; transition:opacity .2s}
+#log div:first-child{color:#eaf0ff; opacity:1}
+
+/* ---------- battle side rails ----------
+   The arena sits between two skill columns. Both rails always render the
+   SAME number of slots — the shorter side is padded with dim empty
+   sockets — so a 3-skill build and a 7-skill build still frame the arena
+   symmetrically instead of one column dangling. */
+#field{
+  display:grid; grid-template-columns:var(--railw) 1fr var(--railw);
+  gap:12px; flex:1; min-height:0; --railw:200px;
+}
+.rail{display:flex; flex-direction:column; gap:6px; min-height:0;
+  overflow-y:auto; overflow-x:hidden; padding-right:2px}
+.rail-h{
+  font:700 9px/1 var(--sans); letter-spacing:.16em; text-transform:uppercase;
+  color:#8f9bc4; padding:3px 2px 7px; display:flex; justify-content:space-between;
+  gap:6px; align-items:baseline; position:sticky; top:0; z-index:2;
+  background:linear-gradient(180deg,#06070d 60%,transparent);
+}
+.rail-h span:first-child{color:#d6ddf5; text-shadow:0 0 10px rgba(120,150,255,.25)}
+.rail.r2 .rail-h{flex-direction:row-reverse}
+.rail-h span{overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+
+/* one skill slot: rune dot, name, and a countdown that reads in seconds */
+.sk{
+  position:relative; border:1px solid var(--line); border-radius:10px;
+  background:linear-gradient(180deg,#0d1322,#080c18); overflow:hidden;
+  padding:0 10px; display:flex; align-items:center; gap:9px;
+  height:var(--slotH); flex:0 0 var(--slotH);
+  box-shadow:var(--pane-hi), inset 0 1px 0 rgba(255,255,255,.03);
+  transition:border-color .18s, box-shadow .18s, background .18s, transform .18s;
+}
+.sk .swipe{position:absolute; inset:0; transform-origin:left; opacity:.2;
+  background:linear-gradient(90deg,color-mix(in srgb,var(--sc) 55%,transparent),var(--sc));
+  pointer-events:none; box-shadow:inset -1px 0 0 color-mix(in srgb,var(--sc) 70%,transparent)}
+.rail.r2 .sk .swipe{transform-origin:right;
+  background:linear-gradient(270deg,color-mix(in srgb,var(--sc) 55%,transparent),var(--sc));
+  box-shadow:inset 1px 0 0 color-mix(in srgb,var(--sc) 70%,transparent)}
+.sk .sn{font:700 10.5px/1.15 var(--sans); color:#c3cbe6; position:relative;
+  flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.sk .sd{font:700 10.5px/1 var(--num); color:#7f8bb0; position:relative;
+  flex:0 0 auto; font-variant-numeric:tabular-nums; letter-spacing:-.02em}
+.sk .dot{width:7px; height:7px; border-radius:50%; background:var(--sc);
+  flex:0 0 auto; position:relative; box-shadow:0 0 8px var(--sc)}
+.rail.r2 .sk{flex-direction:row-reverse}
+/* ready: the row lights up in the skill's own colour and stays lit */
+.sk.rdy{border-color:color-mix(in srgb,var(--sc) 75%,#2a3560);
+  background:linear-gradient(180deg,#101a2e,#0a1020);
+  box-shadow:var(--pane-hi), 0 0 14px -4px var(--sc), inset 2px 0 0 var(--sc)}
+.rail.r2 .sk.rdy{box-shadow:var(--pane-hi), 0 0 14px -4px var(--sc), inset -2px 0 0 var(--sc)}
+.sk.rdy .sn{color:#fff; text-shadow:0 0 8px color-mix(in srgb,var(--sc) 45%,transparent)}
+.sk.rdy .sd{color:var(--sc); font-size:9px; letter-spacing:.1em}
+.sk.rdy .dot{animation:dotPulse 1.6s ease-in-out infinite}
+@keyframes dotPulse{50%{box-shadow:0 0 14px var(--sc)}}
+/* the frame a skill fires: a brief flare, driven by a class toggle so it
+   costs nothing while idle */
+.sk.fire{animation:skfire .42s ease-out}
+@keyframes skfire{
+  0%{box-shadow:0 0 0 0 var(--sc), inset 0 0 22px -6px var(--sc); border-color:#fff}
+  100%{box-shadow:0 0 0 7px transparent, inset 0 0 0 transparent}
+}
+/* combo members carry the glowing edge the draft screen uses */
+.sk.cmb{box-shadow:var(--pane-hi), inset 0 0 0 1px var(--cbc)}
+.sk.cmb .sn::after{content:'◆'; color:var(--cbc); font-size:7px; margin-left:5px;
+  vertical-align:middle; opacity:.9}
+/* padding slot: present enough to hold the grid, quiet enough to ignore */
+.sk.empty{
+  background:#070a12; border-style:dashed; border-color:#141a2e;
+  box-shadow:none; justify-content:center; pointer-events:none;
+}
+.sk.empty::before{content:''; width:5px; height:5px; border-radius:50%; background:#1b2238}
+/* silenced/stunned: the whole rail dims so the reason a rotation stalled
+   is visible rather than mysterious */
+.rail.gag .sk{opacity:.45; filter:saturate(.4)}
+.rail-cc{font:800 9px/1 var(--sans); letter-spacing:.11em; text-transform:uppercase;
+  color:#ffca6e; text-align:center; padding:2px; min-height:11px}
+
+/* enemy roster in PvE: one compact health line per living monster */
+.mob{
+  position:relative; border:1px solid var(--line); border-radius:9px;
+  background:linear-gradient(180deg,#0c1120,#080c18); overflow:hidden;
+  padding:0 9px; display:flex; align-items:center;
+  height:var(--slotH); flex:0 0 var(--slotH); box-shadow:var(--pane-hi);
+}
+.mob .mf{position:absolute; inset:0; transform-origin:left; background:var(--sc);
+  opacity:.2; transition:transform .12s linear}
+.mob .mn{position:relative; font:700 10.5px/1.2 var(--sans); color:#c3cbe6;
+  display:flex; justify-content:space-between; gap:8px; align-items:center; width:100%}
+.mob .mn span{overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.mob .mn b{color:#8a95ba; font:700 10.5px/1 var(--num); font-variant-numeric:tabular-nums;
+  flex:0 0 auto}
+.mob.boss{border-color:#ffb056; background:linear-gradient(180deg,#1b1109,#120b05);
+  box-shadow:var(--pane-hi), 0 0 22px -12px #ffb056}
+.mob.dead{opacity:.28; filter:grayscale(1)}
+.mob.dead .mn{text-decoration:line-through}
+
+.slowtag{position:absolute; top:16px; left:50%; transform:translateX(-50%);
+  font:800 12px/1 var(--disp); letter-spacing:.32em; text-transform:uppercase;
+  color:#fff; opacity:0; transition:opacity .12s; text-shadow:0 0 20px #ff5d7a; z-index:2}
+
+/* ---------- battle speed ----------
+   Sits over the arena rather than in the HUD: it belongs to the fight,
+   and the HUD's three-column grid is already balanced around the clock. */
+.speedbar{
+  position:absolute; right:12px; bottom:12px; z-index:4;
+  display:flex; gap:4px; padding:5px; border-radius:13px;
+  background:#080b15d8; border:1px solid #2a3560;
+  box-shadow:var(--pane-hi), 0 8px 24px -12px #000; backdrop-filter:blur(8px);
+}
+.speedbar .btn{padding:5px 10px; font:700 11px/1 var(--num); border-radius:7px}
+.speedbar #bSkip{font-family:var(--sans); letter-spacing:.06em}
+.speedbar #bSkip:hover{color:var(--gold); border-color:#ffce5a55}
+
+/* ---------- champion select ----------
+   Three cards, each a live canvas portrait over its own text. The portrait
+   runs the SAME body renderer the arena uses, so what you pick here is
+   literally what walks into the fight — a static icon would be a promise
+   the arena then has to keep by hand. */
+#select{align-items:center; justify-content:center}
+.selwrap{width:min(1080px,100%); display:flex; flex-direction:column; gap:14px}
+.selhead{display:flex; align-items:baseline; gap:12px}
+.selhead h2{font:700 26px/1 var(--disp); letter-spacing:-.6px; margin:0}
+#champCards{display:grid; grid-template-columns:repeat(3,1fr); gap:14px}
+.champ{
+  position:relative; border:1px solid var(--line); border-radius:16px; cursor:pointer;
+  background:linear-gradient(180deg,#111730,#080b1a); overflow:hidden;
+  display:flex; flex-direction:column; box-shadow:var(--pane-hi);
+  transition:transform .13s, box-shadow .22s, border-color .18s;
+}
+.champ:hover{transform:translateY(-4px); border-color:#3a4a7d}
+.champ:focus-visible{outline:none; box-shadow:var(--focus)}
+.champ.on{border-color:var(--ck); box-shadow:var(--pane-hi), 0 0 0 2px color-mix(in srgb,var(--ck) 34%,transparent),
+  0 22px 44px -26px #000, 0 0 40px -18px var(--ck)}
+/* the portrait sits in its own lit well so the body reads as a figure
+   standing in the arena rather than a sticker on a card */
+.champ .pv{
+  position:relative; height:158px; display:block; width:100%;
+  background:radial-gradient(120% 100% at 50% 62%, color-mix(in srgb,var(--ck) 17%,transparent), transparent 68%), #05070f;
+  border-bottom:1px solid #ffffff0d;
+}
+.champ .body{padding:13px 15px 15px; display:flex; flex-direction:column; gap:7px; flex:1}
+.champ .kick{font:700 9.5px/1 var(--sans); letter-spacing:.15em; text-transform:uppercase; color:var(--ck)}
+.champ .nm{font:750 19px/1.05 var(--disp); letter-spacing:-.4px}
+.champ .tag{font:600 10px/1 var(--sans); letter-spacing:.11em; text-transform:uppercase; color:var(--dim)}
+.champ .desc{font-size:12px; color:#a3adcd; line-height:1.45; flex:1}
+.champ .note{font-size:11px; color:#7f8ab0; line-height:1.4; border-top:1px solid var(--line-soft); padding-top:8px}
+.champ .note b{color:var(--ck); font-weight:700}
+.champ .key{
+  position:absolute; top:10px; right:10px; z-index:2; width:22px; height:22px; border-radius:7px;
+  border:1px solid #33406e; background:#0b1020cc; color:#93a0c8;
+  font:700 11px/20px var(--num); text-align:center; backdrop-filter:blur(4px);
+}
+.champ.on .key{color:#04060d; background:var(--ck); border-color:var(--ck)}
+.selfoot{display:flex; align-items:center; gap:12px}
+
+/* ---------- ultimate button (battle) ----------
+   Mirrors the speed bar on the opposite corner. This is the ONLY control
+   the player touches once the gate opens, so it gets real estate. */
+.ultbar{position:absolute; left:12px; bottom:12px; z-index:4; display:flex; gap:8px; align-items:flex-end}
+.ultbtn{
+  position:relative; min-width:132px; padding:7px 11px 8px; border-radius:13px; overflow:hidden;
+  border:1px solid color-mix(in srgb,var(--ck) 44%,#2a3560); cursor:pointer; text-align:left;
+  background:linear-gradient(180deg,#0b1020e8,#070a12ee); backdrop-filter:blur(8px);
+  box-shadow:var(--pane-hi), 0 8px 24px -12px #000, 0 0 26px -16px var(--ck);
+  color:var(--ink); font:inherit;
+  transition:transform .08s, box-shadow .2s, border-color .18s, opacity .2s;
+}
+.ultbtn .uk{font:700 9px/1 var(--sans); letter-spacing:.15em; text-transform:uppercase; color:var(--dim)}
+.ultbtn .un{font:750 12.5px/1.2 var(--sans); letter-spacing:.02em; color:color-mix(in srgb,var(--ck) 55%,#ffffff)}
+.ultbtn .us{font:700 9.5px/1 var(--num); letter-spacing:.08em; color:var(--mute); margin-top:3px}
+/* window timer: a bar that drains left-to-right while the ult is open */
+.ultbtn .uw{position:absolute; left:0; right:0; bottom:0; height:3px; background:var(--ck);
+  transform-origin:left; transform:scaleX(0); opacity:0}
+.ultbtn.ready{animation:ultpulse 1.9s ease-in-out infinite}
+.ultbtn.ready:hover{transform:translateY(-2px); border-color:var(--ck)}
+.ultbtn.live{border-color:var(--ck); animation:none;
+  box-shadow:var(--pane-hi), 0 0 0 2px color-mix(in srgb,var(--ck) 30%,transparent), 0 0 34px -12px var(--ck)}
+.ultbtn.live .uw{opacity:1}
+.ultbtn.spent{opacity:.34; cursor:default; animation:none; filter:grayscale(.7)}
+.ultbtn.ai{cursor:default; animation:none; min-width:0; padding:6px 10px}
+.ultbtn.ai .un{font-size:11.5px}
+@keyframes ultpulse{
+  0%,100%{box-shadow:var(--pane-hi), 0 8px 24px -12px #000, 0 0 22px -16px var(--ck)}
+  50%    {box-shadow:var(--pane-hi), 0 8px 24px -12px #000, 0 0 30px -8px var(--ck)}
+}
+
+/* ---------- result ---------- */
+#result{align-items:center; justify-content:center; text-align:center}
+#result .card{
+  background:linear-gradient(180deg,#0b101fe6,#070a13f2);
+  border:1px solid var(--line); border-radius:22px; padding:34px 48px;
+  box-shadow:var(--pane-hi), 0 30px 70px -40px #000;
+}
+.big{font:700 44px/1 var(--disp); letter-spacing:-1.5px; margin:0 0 8px}
+
+/* ---------- per-skill contribution panel ----------
+   Ranked bars on the result screen. The point is the draft post-mortem:
+   which of the slots the player paid for actually did work. Every row is
+   one ledger entry, widths are relative to the strongest row so the top
+   bar always fills and the rest read as a share of it. */
+#dmgPanel{margin:0 auto 20px; max-width:660px; text-align:left}
+#dmgPanel:empty{display:none}
+.dmg-head{
+  display:flex; align-items:center; gap:10px; margin-bottom:10px;
+  padding-bottom:8px; border-bottom:1px solid var(--line-soft);
+}
+.dmg-title{font:700 11px/1 var(--disp); letter-spacing:.22em;
+  text-transform:uppercase; color:var(--dim)}
+.dmg-tabs{display:flex; gap:6px; margin-left:auto}
+.dmg-legend{display:flex; gap:12px; margin:2px 0 12px; font-size:10.5px; color:var(--mute)}
+.dmg-legend i{display:inline-block; width:8px; height:8px; border-radius:2px;
+  margin-right:5px; vertical-align:0}
+.dmg-rows{display:flex; flex-direction:column; gap:5px;
+  max-height:250px; overflow-y:auto; padding-right:4px}
+.skrow{
+  display:grid; grid-template-columns:150px 1fr 46px 62px 34px;
+  gap:10px; align-items:center; font-size:11.5px;
+}
+.skrow.zero{opacity:.42}
+/* a buff is dimmed, but less than a dead slot, and its label is tinted
+   so the two are distinguishable at a glance */
+.skrow.buff{opacity:.72}
+.skrow.buff .skpct{color:var(--mute); font-size:10px; font-weight:400}
+.skname{display:flex; align-items:center; gap:6px; min-width:0}
+.skname b{font-weight:600; color:var(--ink); white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis}
+.skname i{flex:none; width:7px; height:7px; border-radius:50%}
+.sklvl{flex:none; font:700 9px/1 var(--num); padding:2px 4px; border-radius:3px;
+  background:#ffffff10; color:var(--dim)}
+.skbar{height:13px; border-radius:4px; background:#ffffff09; overflow:hidden}
+.skfill{display:flex; height:100%; border-radius:4px; overflow:hidden;
+  min-width:2px; transition:width .5s cubic-bezier(.2,.8,.2,1)}
+.skfill span{height:100%}
+.skpct{font:600 11px/1 var(--num); color:var(--ink); text-align:right}
+.skval{font:400 11px/1 var(--num); color:var(--dim); text-align:right}
+.skcast{font:400 10.5px/1 var(--num); color:var(--mute); text-align:right}
+.dmg-foot{margin-top:10px; font-size:11px; color:var(--mute)}
+@media (max-width:760px){
+  .skrow{grid-template-columns:106px 1fr 42px 0 30px}
+  .skval{display:none}
+}
+
+/* ---------- tables ---------- */
+table{width:100%; border-collapse:collapse; font:11.5px/1.45 var(--num)}
+th,td{text-align:left; padding:4px 7px; border-bottom:1px solid var(--line-soft)}
+th{color:var(--mute); font:600 9.5px/1 var(--sans); letter-spacing:.12em; text-transform:uppercase;
+  padding-bottom:6px}
+
+/* ---------- scrollbars ----------
+   Two engines, one look. Firefox only exposes width/colour keywords, so it
+   gets `scrollbar-width:thin`; WebKit gets a real thumb drawn as a 4px pill
+   floating inside a 12px track (transparent border + content-box clip), which
+   is why it reads as an overlay rather than a gutter.
+
+   Containers marked .scroll-fade keep the thumb invisible until you hover
+   them — used where the bar would otherwise hang in dead space at the edge
+   of the frame and look like a browser artifact rather than part of the app. */
+*{scrollbar-width:thin; scrollbar-color:#2b3760 transparent}
+::-webkit-scrollbar{width:12px; height:12px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{
+  background:#2b3760; border:4px solid transparent; border-radius:99px;
+  background-clip:content-box;
+}
+::-webkit-scrollbar-thumb:hover{background:#42538c; background-clip:content-box}
+::-webkit-scrollbar-thumb:active{background:#5467a8; background-clip:content-box}
+::-webkit-scrollbar-corner{background:transparent}
+.scroll-fade{scrollbar-color:transparent transparent}
+.scroll-fade:hover,.scroll-fade:focus-within{scrollbar-color:#2b3760 transparent}
+.scroll-fade::-webkit-scrollbar-thumb{background:transparent}
+.scroll-fade:hover::-webkit-scrollbar-thumb,
+.scroll-fade:focus-within::-webkit-scrollbar-thumb{
+  background:#2b3760; background-clip:content-box;
+}
+
+/* ---------- codex ---------- */
+.tabs{display:flex; gap:5px; flex-wrap:wrap}
+.tab{
+  padding:6px 12px; border-radius:999px; border:1px solid var(--line); background:#0b0f1d;
+  font:700 10.5px/1 var(--sans); letter-spacing:.11em; text-transform:uppercase; color:#8b96bb;
+  cursor:pointer; transition:.15s;
+}
+.tab:hover{color:var(--ink); border-color:#2c3862}
+.tab.on{color:#fff; border-color:#3f52a0; background:#18213f; box-shadow:0 0 18px -9px #4a7cf0}
+#codexGrid{display:grid; grid-template-columns:repeat(auto-fill,minmax(268px,1fr)); gap:11px}
+.cx{
+  border:1px solid var(--line); border-radius:13px; padding:12px 13px;
+  background:linear-gradient(180deg,#0c1120,#090d1b);
+  display:flex; flex-direction:column; gap:7px; position:relative; overflow:hidden;
+  box-shadow:var(--pane-hi);
+}
+.cx .cxh{display:flex; align-items:baseline; gap:7px}
+.cx .cxn{font:750 13.5px/1.2 var(--sans)}
+.cx .lore{font-size:11px; color:var(--dim); line-height:1.45; font-style:italic}
+.cx table{margin-top:2px}
+.cx .kv{font-size:10.5px; color:var(--dim); display:flex; gap:10px; flex-wrap:wrap}
+.demo{width:100%; height:78px; display:block; border-radius:9px;
+  background:radial-gradient(120% 140% at 50% 100%, #101733 0%, #070b17 70%);
+  border:1px solid #1a2340}
+.cx .dcap{font:700 8.5px/1 var(--sans); letter-spacing:.12em; text-transform:uppercase;
+  color:var(--mute); display:flex; justify-content:space-between; align-items:center}
+
+/* combo codex — scoped to #comboGrid so these column-card rules can never
+   leak onto the battle rail's .sk.cmb rows, which are horizontal */
+#comboGrid{display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:11px}
+#comboGrid .cmb{
+  border:1px solid var(--line); border-radius:13px; padding:13px 14px;
+  background:linear-gradient(180deg,#0c1120,#090d1b);
+  display:flex; flex-direction:column; gap:9px; position:relative; overflow:hidden;
+  box-shadow:var(--pane-hi);
+}
+#comboGrid .cmb::before{content:''; position:absolute; inset:0 auto 0 0; width:3px; background:var(--cc)}
+#comboGrid .cmb .ch{display:flex; align-items:baseline; gap:8px}
+#comboGrid .cmb .cn{font:750 13.5px/1.2 var(--sans); color:var(--cc)}
+#comboGrid .cmb .csize{font:700 8.5px/1 var(--sans); letter-spacing:.1em; text-transform:uppercase;
+  color:#6a769c; border:1px solid #232d4e; border-radius:999px; padding:3px 7px}
+#comboGrid .cmb .recipe{display:flex; align-items:center; gap:6px; flex-wrap:wrap}
+#comboGrid .cmb .plus{color:#4b5578; font-weight:700}
+#comboGrid .cmb .eff{display:flex; flex-direction:column; gap:3px}
+#comboGrid .cmb .er{display:flex; gap:7px; font-size:11px; align-items:baseline}
+#comboGrid .cmb .ev{font-weight:750; color:#8fe0a8; min-width:52px}
+#comboGrid .cmb .en{color:#98a3c6}
+#comboGrid .cmb .who{font-size:10.5px; color:#6a769c; line-height:1.55}
+#comboGrid .cmb .who b{color:#93a0c8; font-weight:600}
+#comboGrid .cmb.live{box-shadow:var(--pane-hi), 0 0 0 1px var(--cc), 0 0 22px -5px var(--cc)}
+#comboGrid .cmb .livetag{font:700 8.5px/1 var(--sans); letter-spacing:.1em; text-transform:uppercase;
+  color:#0a0e1c; background:var(--cc); border-radius:999px; padding:3px 7px}
+
+#detail .dclose{display:none}
+
+/* ---------- responsive ---------- */
+@media (hover:none){
+  .card-s:hover{transform:none}
+  .champ:hover{transform:none}
+  .asc:hover{transform:none}
+  /* touch has no hover to reveal a thumb with, so never hide it */
+  .scroll-fade{scrollbar-color:#2b3760 transparent}
+}
+/* Kill the 300ms tap delay and the grey flash on every interactive surface. */
+.btn,.tab,.card-s,.champ,.asc,.sellb,.card-s .info{
+  touch-action:manipulation; -webkit-tap-highlight-color:transparent;
+}
+
+/* Mid widths: the draft's fixed 300px side column is the first thing to give. */
+@media (max-width:1060px) and (min-width:861px){
+  .split{grid-template-columns:1fr 258px}
+  #field{--railw:170px}
+}
+
+/* ==========================================================
+   NARROW / TOUCH
+   The desktop build is a fixed 1180x760 frame: #app has a hard height and
+   every .screen is absolutely positioned inside it. On a phone that frame
+   is smaller than the content, so panels were clipped with nothing to
+   scroll, and compressed grid rows painted on top of each other.
+   Below 860px the whole thing becomes ordinary document flow instead —
+   #app grows to fit its content and the BODY scrolls. One scroller, no
+   overlap, and the address bar can do what it likes.
+   ========================================================== */
+@media (max-width:860px){
+  body{display:block; overflow:visible; overflow-x:hidden}
+  #app{width:100%; height:auto; min-height:100dvh}
+  .screen{
+    position:relative; inset:auto; overflow:visible; min-height:100dvh;
+    padding:max(14px,env(safe-area-inset-top)) max(14px,env(safe-area-inset-left))
+            calc(20px + env(safe-area-inset-bottom)) max(14px,env(safe-area-inset-right));
+  }
+  /* the slide-in translated the full scroll length once screens were in flow */
+  .screen.on{animation-name:screenFade}
+
+  /* ---- title ---- */
+  #title.on{overflow:visible; display:block}
+  #title .card{padding:24px 18px 22px; max-width:none; border-radius:20px; margin:0}
+  .sub{max-width:none}
+  .legend{gap:6px}
+  .legend b{padding:4px 9px; font-size:9px; letter-spacing:.1em}
+  .namerow label{max-width:none}
+  #daily,#progress{max-width:none}
+  .coderow .codein{flex:1 1 200px; min-width:0}
+
+  /* ---- shared headers: labels on one line, actions on the next ---- */
+  .dhead{flex-wrap:wrap; gap:8px}
+  .dhead .grow{flex:1 0 100%; height:0; margin:0}
+  /* The draft header carries gold, round and End Turn — the things you need
+     while scrolling a long shop, so it rides along. */
+  #draft .dhead{
+    position:sticky; top:calc(-1 * max(14px,env(safe-area-inset-top)));
+    z-index:15; margin:calc(-1 * max(14px,env(safe-area-inset-top))) -14px 0;
+    padding:10px 14px; background:#070a14f2; backdrop-filter:blur(12px);
+    border-bottom:1px solid var(--line-soft);
+  }
+  #draft{gap:10px}
+
+  /* ---- draft body: panels stack and size to their own content ---- */
+  .split{display:flex; flex-direction:column; gap:12px; flex:none; min-height:0}
+  .panel{padding:11px}
+  .shop{grid-template-columns:repeat(auto-fill,minmax(142px,1fr)); gap:8px}
+  .card-s{min-height:0; padding:10px 10px 11px 13px}
+  .card-s .info{width:28px; height:28px; font-size:12px; line-height:26px; top:5px; right:5px}
+  .bench{grid-template-columns:repeat(auto-fill,minmax(146px,1fr)); overflow:visible;
+    padding-right:0}
+  #foeBench{grid-template-columns:repeat(auto-fill,minmax(126px,1fr))}
+
+  /* ---- detail: a real bottom sheet ----
+     The old selector was `.split > .panel.scroll`, but the panel is a
+     grandchild of .split (each column is a wrapper div), so it matched
+     nothing and the panel just stacked into the flow instead. */
+  .split .panel.scroll{
+    position:fixed; inset:auto 0 0 0; z-index:60; max-height:min(66dvh,540px);
+    border-radius:20px 20px 0 0; border-width:1px 0 0;
+    background:#080c17f7; backdrop-filter:blur(16px);
+    transform:translateY(101%); transition:transform .26s cubic-bezier(.2,.8,.2,1);
+    overflow-y:auto; overscroll-behavior:contain; flex:none;
+    padding:16px 16px calc(18px + env(safe-area-inset-bottom));
+    box-shadow:0 -24px 60px -24px #000, inset 0 1px 0 #ffffff14;
+  }
+  .split .panel.scroll.open{transform:none}
+  /* grab handle, so it reads as a sheet rather than a docked panel */
+  .split .panel.scroll::before{
+    content:''; position:sticky; top:-2px; display:block; width:38px; height:4px;
+    margin:-6px auto 8px; border-radius:99px; background:#2b3760;
+  }
+  #detail .dclose{
+    display:grid; place-items:center; float:right; cursor:pointer; color:#8b96bb;
+    font:700 15px/1 var(--sans); width:30px; height:30px; margin:-4px -4px 0 8px;
+    border-radius:9px; border:1px solid var(--line);
+  }
+
+  /* ---- battle: still one fitted view, never a scroller ---- */
+  #battle{min-height:100dvh; overflow:hidden}
+  .hud{grid-template-columns:1fr 62px 1fr; gap:8px}
+  .hp{height:30px}
+  .hp .lab{padding:0 10px; font-size:11.5px}
+  .hp .lab span:last-child{font-size:12px}
+  .timer{font-size:16px; padding:6px 0; border-radius:9px}
+  #log{height:54px; padding:8px 12px; font-size:11px; border-radius:11px}
+  /* narrow: the rails would crush the arena, so they go under it as two
+     scrolling strips and the log gives up its height instead. Padding
+     slots are pointless here — a horizontal strip has no ragged edge. */
+  #field{grid-template-columns:1fr; grid-template-rows:1fr auto; gap:8px}
+  #field #stage{grid-row:1; min-height:34dvh; border-radius:14px}
+  .rail{flex-direction:row; overflow-x:auto; overflow-y:hidden; max-height:52px;
+    align-items:flex-start; gap:5px; padding-right:0;
+    scrollbar-width:none; scroll-snap-type:x proximity;
+    /* fade the strip's edges so a half-scrolled slot reads as "more that way" */
+    mask-image:linear-gradient(90deg,transparent,#000 14px,#000 calc(100% - 14px),transparent);
+  }
+  .rail::-webkit-scrollbar{height:0; width:0}
+  .rail .rail-h{display:none}
+  .rail .sk, .rail .mob{min-width:118px; flex:0 0 auto; scroll-snap-align:start}
+  .rail .sk.empty{display:none}
+  .rail.r2{justify-content:flex-end}
+  .rail-cc{display:none}
+  .speedbar{right:8px; bottom:8px; padding:4px; gap:3px; border-radius:11px}
+  .speedbar .btn{padding:6px 9px; min-height:0}
+  .ultbar{left:8px; bottom:8px}
+  .ultbtn{min-width:112px; padding:6px 10px 7px}
+
+  /* ---- champion select / rewards / result ---- */
+  #select{align-items:stretch; justify-content:flex-start}
+  .selwrap{width:100%}
+  .selhead{flex-wrap:wrap; gap:8px}
+  .selhead h2{font-size:20px}
+  /* a row card shows all three champions without three screens of scrolling */
+  #champCards{grid-template-columns:1fr}
+  .champ{flex-direction:row}
+  .champ .pv{height:auto; width:106px; flex:0 0 106px;
+    border-bottom:0; border-right:1px solid #ffffff0d}
+  .champ .body{padding:11px 13px 13px}
+  .selfoot{flex-wrap:wrap; gap:10px}
+  #offCards{grid-template-columns:1fr}
+  #offCards .card-s{min-height:0}
+  #result,#offer{align-items:stretch; justify-content:flex-start}
+  #result .card,#offer .card{padding:22px 18px; border-radius:18px; max-width:none !important}
+  .big{font-size:30px; letter-spacing:-1px}
+  #dmgPanel{max-width:none}
+  .dmg-rows{max-height:none}
+
+  /* ---- codex / ascension ---- */
+  #codexGrid,#comboGrid,#ascGrid{grid-template-columns:1fr}
+  #lab .panel.scroll,#asc .panel.scroll{overflow:visible}
+  .tabs{gap:4px}
+  .tab{padding:7px 11px}
+
+  /* thumb-sized controls */
+  .btn{padding:10px 15px; min-height:40px}
+  .btn.seg{padding:4px 8px; min-height:25px}
+  .sellb{padding:7px 9px}
+}
+@keyframes screenFade{from{opacity:0} to{opacity:1}}
+
+/* Very narrow: one shop column reads better than two crushed ones. */
+@media (max-width:380px){
+  .shop{grid-template-columns:1fr}
+  .bench{grid-template-columns:1fr 1fr}
+  .namerow{gap:8px}
+  .btn{padding:10px 12px}
+}
+/* Landscape phone: height is the scarce axis, so trim the chrome. */
+@media (max-width:860px) and (max-height:520px) and (orientation:landscape){
+  #field #stage{min-height:44dvh}
+  #log{height:0; padding:0; border:0; overflow:hidden}
+  .rail{max-height:46px}
+}
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.001ms !important; animation-iteration-count:1 !important;
+    transition-duration:.001ms !important}
+}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- ============ TITLE ============ -->
+  <section class="screen on" id="title">
+    <div class="card">
+      <h1><span>ARCANE CLASH</span></h1>
+      <p class="sub">Two bosses. Forty skills. A duel is best of five — you draft a round,
+      watch it fight, then answer what you just saw. You don't touch the controls once the
+      gate opens. Buy three copies of a skill to fuse it up a level. Crits bend time.</p>
+      <div class="legend">
+        <b style="color:var(--t1)">◆ Common</b><b style="color:var(--t2)">◆ Rare</b>
+        <b style="color:var(--t3)">◆ Epic</b><b style="color:var(--t4)">◆ Mythic</b>
+        <b style="color:var(--t5)">◆ Legendary</b>
+      </div>
+      <div class="namerow">
+        <label><span class="stats" style="color:#7fd4ff">Champion 1</span>
+          <input id="nm1" class="nameinput" maxlength="18" placeholder="AZURE WARDEN"></label>
+        <label><span class="stats" style="color:#ff8fae">Champion 2</span>
+          <input id="nm2" class="nameinput" maxlength="18" placeholder="CRIMSON TYRANT"></label>
+      </div>
+      <div class="row" style="justify-content:center;margin-top:6px;gap:8px">
+        <button class="btn seg on" id="bVs1">1 Player · vs AI</button>
+        <button class="btn seg" id="bVs2">2 Players · hotseat</button>
+      </div>
+      <div class="row" style="justify-content:center;margin-top:20px">
+        <button class="btn pri" id="bStart">Draft &amp; Fight</button>
+        <button class="btn pri" id="bDelve" style="--pri:#ffce5a">Delve · PvE</button>
+        <button class="btn pri" id="bDaily" style="--pri:#7fe0a0">Daily</button>
+        <button class="btn" id="bLab">Codex</button>
+        <button class="btn" id="bMute" title="Toggle sound">♪ On</button>
+      </div>
+      <!-- Async PvP: paste a build code and fight that exact loadout. No
+           server — the code IS the opponent. -->
+      <div class="coderow">
+        <input id="ghostCode" class="codein" maxlength="120" spellcheck="false"
+               placeholder="Paste a build code — fight their ghost">
+        <button class="btn" id="bGhost">Fight ghost</button>
+      </div>
+      <!-- Daily and Discovery sit side by side: both are ~100px tall status
+           panels, and stacking them pushed the card past the app's 760px
+           height. They wrap back to a stack on narrow screens. -->
+      <div class="panelrow">
+        <div id="daily"></div>
+        <div id="progress"></div>
+      </div>
+      <div id="record"></div>
+      <p class="sub" id="modeHint" style="font-size:11.5px;margin-top:14px;color:#5b6488">
+        You draft, the AI drafts against you, then the bosses fight on their own.</p>
+    </div>
+  </section>
+
+  <!-- ============ CHAMPION SELECT ============ -->
+  <section class="screen" id="select">
+    <div class="selwrap">
+      <div class="selhead">
+        <span class="turnpill p1" id="selWho">PLAYER 1</span>
+        <h2>Choose your champion</h2>
+        <span class="grow"></span>
+        <span class="stats" id="selHint" style="color:#7d88ad"></span>
+        <button class="btn" id="selBack">Back</button>
+      </div>
+      <div id="champCards"></div>
+      <div class="selfoot">
+        <p class="sub" id="selNote" style="margin:0; max-width:none; font-size:11.5px; color:#5b6488">
+          One charge per battle, fired by hand. Your drafted skills still cast themselves.</p>
+        <span class="grow"></span>
+        <button class="btn pri" id="selGo" disabled>Confirm</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ DRAFT ============ -->
+  <section class="screen" id="draft">
+    <div class="dhead">
+      <span class="turnpill p1" id="whoTurn">PLAYER 1 · DRAFTING</span>
+      <span class="gold mono" id="goldTxt">⬤ 24</span>
+      <span class="stats" id="roundTxt">Round 1 / 5</span>
+      <span class="stats" id="seriesTxt"></span>
+      <span class="grow"></span>
+      <button class="btn" id="bReroll">Reroll · 2</button>
+      <button class="btn pri" id="bDone">End Turn</button>
+    </div>
+    <div id="comboBar"></div>
+
+    <div class="split">
+      <div style="display:flex;flex-direction:column;gap:12px;min-height:0">
+        <div class="panel">
+          <h3>Shop</h3>
+          <div class="shop" id="shop"></div>
+        </div>
+        <div class="panel grow" style="display:flex;flex-direction:column;min-height:0">
+          <h3>Your Loadout — <span id="benchCount">0</span> skills</h3>
+          <div class="bench" id="bench"></div>
+        </div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:12px;min-height:0">
+        <!-- Revealed after round 1: the whole point of drafting between fights
+             is that you get to answer what you just watched beat you. -->
+        <div class="panel" id="foePanel" style="display:none;flex:0 0 auto">
+          <h3>Opponent fielded — <span id="foeHead" class="stats"></span></h3>
+          <div class="bench" id="foeBench"></div>
+          <div id="foeCombo" class="stats" style="margin-top:6px;color:#7f8bb0"></div>
+        </div>
+        <div class="panel scroll grow">
+          <h3>Detail</h3>
+          <div id="detail" style="font-size:12px;color:#98a3c6">
+            Hover a card to inspect its numbers.
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ BATTLE ============ -->
+  <section class="screen" id="battle">
+    <div class="hud">
+      <div>
+        <div class="hp p1"><div class="fill" id="hp1"></div><div class="sh" id="sh1"></div>
+          <div class="lab"><span id="n1">AZURE WARDEN</span><span id="v1">1000</span></div></div>
+      </div>
+      <div class="timer" id="clock">0:00</div>
+      <div>
+        <div class="hp p2"><div class="fill" id="hp2"></div><div class="sh" id="sh2"></div>
+          <div class="lab"><span id="v2">1000</span><span id="n2">CRIMSON TYRANT</span></div></div>
+      </div>
+    </div>
+    <div id="field">
+      <div class="rail" id="rail1">
+        <div class="rail-h"><span id="rh1">Skills</span></div>
+        <div class="rail-cc" id="cc1"></div>
+        <div id="sk1" style="display:contents"></div>
+      </div>
+      <div id="stage">
+        <canvas id="cv"></canvas>
+        <div class="slowtag" id="slowtag">Critical</div>
+        <div class="ultbar" id="ultbar"></div>
+        <div class="speedbar" id="speedbar">
+          <button class="btn seg on" data-spd="1">1×</button>
+          <button class="btn seg" data-spd="2">2×</button>
+          <!-- <button class="btn seg" data-spd="4">4×</button> -->
+          <button class="btn seg" id="bSkip" title="Resolve this battle instantly">Skip</button>
+        </div>
+      </div>
+      <div class="rail r2" id="rail2">
+        <div class="rail-h"><span id="rh2">Skills</span></div>
+        <div class="rail-cc" id="cc2"></div>
+        <div id="sk2" style="display:contents"></div>
+      </div>
+    </div>
+    <div id="log"></div>
+  </section>
+
+  <!-- ============ RESULT ============ -->
+  <section class="screen" id="result">
+    <div class="card">
+      <p class="big" id="winTxt">VICTORY</p>
+      <p class="sub" id="winSub" style="margin:0 auto 18px"></p>
+      <div id="dmgPanel"></div>
+      <!-- Build code: filled by attachShare() on the cards worth sharing
+           (series result, delve run). Hidden otherwise. -->
+      <div class="coderow" id="shareRow" style="display:none"></div>
+      <div class="row" style="justify-content:center">
+        <button class="btn pri" id="bAgain">Rematch (same builds)</button>
+        <button class="btn" id="bNew">New Draft</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ PvE REWARD ============ -->
+  <section class="screen" id="offer">
+    <div class="card" style="max-width:900px">
+      <p class="stats" id="offHead" style="margin-bottom:2px"></p>
+      <p class="big" style="font-size:26px;margin:0 0 4px">CHOOSE ONE</p>
+      <p class="sub" id="offSub" style="margin:0 auto 20px"></p>
+      <div id="offCards"></div>
+      <div style="margin-top:16px"><button id="offReroll" class="btn" style="font-size:12px">↻ Refresh (1 left)</button></div>
+      <p class="sub" id="offKit" style="font-size:11.5px;margin-top:18px;color:#5b6488"></p>
+    </div>
+  </section>
+
+  <!-- ============ DELVE ASCENSION ============ -->
+  <section class="screen" id="asc">
+    <div class="dhead">
+      <b style="font-size:16px">Delve · Ascension</b>
+      <span class="stats" id="ascStat"></span>
+      <span class="grow"></span>
+      <button class="btn" id="ascBack">Back</button>
+      <button class="btn pri" id="ascGo" style="--pri:#ffce5a">Descend</button>
+    </div>
+    <p class="sub" style="max-width:none;margin:8px 0 0;font-size:11.5px;color:#5b6488">
+      Each modifier makes the delve harder and is unlocked by how deep you have
+      already reached. Stack as many as you like — your best depth is recorded
+      per ascension level, so a shallow run under four modifiers still counts
+      for something.</p>
+    <div class="panel grow scroll" style="margin-top:12px">
+      <div id="ascGrid"></div>
+    </div>
+  </section>
+
+  <!-- ============ CODEX ============ -->
+  <section class="screen" id="lab">
+    <div class="dhead">
+      <b style="font-size:16px">Codex</b>
+      <span class="stats" id="labStat">Every skill, every level. Study before you draft.</span>
+      <span class="grow"></span>
+      <div class="tabs" id="codexView"></div>
+      <button class="btn" id="bBack">Back</button>
+    </div>
+    <div class="dhead" style="margin-top:8px">
+      <div class="tabs" id="codexTabs"></div>
+    </div>
+    <div class="panel grow scroll" style="margin-top:12px">
+      <div id="codexGrid"></div>
+      <div id="comboGrid" style="display:none"></div>
+    </div>
+  </section>
+
+</div>
+<script src="core.js"></script>
+<script src="arena-art.js"></script>
+<script src="codex.js"></script>
+<script src="sim-engine.js"></script>
+<script src="battle-render.js"></script>
+<script src="draft.js"></script>
+<script src="pve-daily.js"></script>
+<script src="main.js"></script>
+</body>
+</html>

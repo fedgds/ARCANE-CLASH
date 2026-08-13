@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx --version)",
+      "Bash(grep -n '^\\\\s*/\\\\*\\\\s*[═─]\\\\{5,\\\\}' index.html)",
+      "Bash(awk -F: '$1>3600')",
+      "Bash(grep -n '<\\\\\\\\/\\\\|<!--\\\\|-->' index.html)",
+      "Bash(awk -F: '$1>1187')",
+      "Bash(awk 'NR>=1188 && NR<=10654 && /^var /' index.html)",
+      "Bash(grep -c '\\\\\\\\r')",
+      "Bash(awk 'NR<=50 && /\\\\r$/ {c++} END{print \"CRLF lines in first 50:\", c+0}' index.html)",
+      "Bash(python _split.py)",
+      "Bash(grep -nE '^[A-Za-z_$\\(]')",
+      "Bash(awk '{printf \"%-20s %8s\\\\n\", $9, $5}')"
+    ]
+  }
+}
