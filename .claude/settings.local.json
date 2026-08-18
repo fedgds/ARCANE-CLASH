@@ -11,7 +11,9 @@
       "Bash(awk 'NR<=50 && /\\\\r$/ {c++} END{print \"CRLF lines in first 50:\", c+0}' index.html)",
       "Bash(python _split.py)",
       "Bash(grep -nE '^[A-Za-z_$\\(]')",
-      "Bash(awk '{printf \"%-20s %8s\\\\n\", $9, $5}')"
+      "Bash(awk '{printf \"%-20s %8s\\\\n\", $9, $5}')",
+      "Bash(grep -rn '\\\\$\\\\$ *=' core.js index.html)",
+      "Bash(grep -n \"const \\\\$\\\\|const \\\\$\\\\$\" core.js)"
     ]
   }
 }

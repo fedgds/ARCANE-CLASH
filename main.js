@@ -61,6 +61,7 @@ const Sel = {
       el.className = 'champ' + (this.pick===c.id ? ' on' : '');
       el.style.setProperty('--ck', c.acc);
       el.tabIndex = 0;
+      el.dataset.sfx = 'none';        // Sel.choose decides — see there
       el.innerHTML = `
         <span class="key">${i+1}</span>
         <canvas class="pv"></canvas>
@@ -84,7 +85,9 @@ const Sel = {
   choose(id){
     if(this.pick === id) return;
     this.pick = id;
-    sfx.click();
+    /* The card carries data-sfx="none" so this owns the sound: re-picking what
+       is already picked should be silent, and keys 1–3 reach here too. */
+    sfx.pick();
     this.sync();
   },
   sync(){
@@ -99,7 +102,7 @@ const Sel = {
   },
   confirm(){
     if(!champOf(this.pick)) return;
-    sfx.buy();
+    sfx.confirm();
     G.champs[this.side] = this.pick;
     Save.data.champs = Save.data.champs || [null,null];
     Save.data.champs[this.side] = this.pick;
@@ -170,7 +173,7 @@ $('#selGo').onclick   = ()=>Sel.confirm();
    sets `back`, everything else falls through to the title. Without this,
    backing out of champion select silently discards the modifier choice. */
 $('#selBack').onclick = ()=>{
-  sfx.click(); Sel.stop(); Sel.after = null;
+  Sel.stop(); Sel.after = null;
   const to = Sel.back; Sel.back = null;
   if(to) to(); else { show('title'); renderRecord(); }
 };
@@ -179,7 +182,7 @@ addEventListener('keydown', e=>{
   if(e.key>='1' && e.key<='3'){
     const c = CHAMPIONS[+e.key-1]; if(c) Sel.choose(c.id);
   } else if(e.key==='Enter'){ Sel.confirm(); }
-  else if(e.key==='Escape'){ Sel.stop(); Sel.after=null; show('title'); }
+  else if(e.key==='Escape'){ sfx.back(); Sel.stop(); Sel.after=null; show('title'); }
 });
 addEventListener('resize', ()=>{ if($('#select').classList.contains('on')) Sel.fitPortraits(); });
 
@@ -187,8 +190,15 @@ addEventListener('resize', ()=>{ if($('#select').classList.contains('on')) Sel.f
    NAV + BOOT
    ═══════════════════════════════════════════════════════════════ */
 function show(id){
+  const from = $$('.screen').find(s => s.classList.contains('on'));
   $$('.screen').forEach(s=>s.classList.toggle('on', s.id===id));
   if(id!=='battle') running = false;
+  /* The battle bed must not follow the player out of the arena. stop() is
+     idempotent, so routing every screen change through here is enough to
+     guarantee it — no screen has to remember to clean up after itself. */
+  if(id!=='battle') sfx.amb.stop();
+  /* air moving between screens; skipped on the first paint and on a no-op */
+  if(from && from.id !== id) sfx.whoosh();
   if(id==='draft'){ const p=$('#detail').closest('.panel'); if(p) p.classList.remove('open'); }
   /* Below 860px the app is ordinary document flow (body scrolls), so
      switching screens doesn't reposition the viewport the way the
@@ -206,17 +216,74 @@ addEventListener('keydown', audioKick, {once:true});
 /* browsers suspend the context when the tab is hidden */
 document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) sfx.resume(); });
 
+/* ═══════════════════════════════════════════════════════════════
+   INTERFACE SOUND — one delegated listener rather than a call in every
+   handler. Anything clickable makes a sound by default, including elements
+   built later by renderDraft/renderCodex/Sel.render, and the exceptions
+   declare themselves in markup instead of in code:
+
+     (nothing)            click — the default press
+     data-sfx="confirm"   commits and moves forward
+     data-sfx="back"      returns; falls where confirm rises
+     data-sfx="tab"       switches a view without committing anything
+     data-sfx="pick"      takes a thing
+     data-sfx="none"      the handler owns its sound, because the sound
+                          depends on whether the action succeeded
+
+   Capture phase and pointerdown, so the sound lands with the press rather
+   than after the handler has finished rendering.
+   ═══════════════════════════════════════════════════════════════ */
+const SFX_HIT = '.btn,.card-s,.champ,.asc,.own,.sellb,.info,[data-sfx],[data-spd]';
+/* an explicit map, not a lookup on sfx itself: a typo should fall back to the
+   default press, never dispatch into the engine's internals */
+const SFX_UI = {
+  click:   ()=>sfx.click(),
+  confirm: ()=>sfx.confirm(),
+  back:    ()=>sfx.back(),
+  tab:     ()=>sfx.tab(),
+  pick:    ()=>sfx.pick(),
+};
+$('#app').addEventListener('pointerdown', e=>{
+  const el = e.target.closest && e.target.closest(SFX_HIT);
+  if(!el) return;
+  /* a disabled control did nothing, so it says nothing — and a spent card in
+     the shop is disabled by class rather than by attribute */
+  if(el.disabled || el.classList.contains('dead') || el.classList.contains('locked')) return;
+  const k = el.dataset.sfx;
+  if(k === 'none') return;
+  sfx.init();
+  (SFX_UI[k] || SFX_UI.click)();
+}, true);
+
 function paintMute(){
   $('#bMute').textContent = sfx.muted ? '♪ Off' : '♪ On';
   $('#bMute').style.opacity = sfx.muted ? '.5' : '1';
 }
+/* data-sfx="none" in the markup: unmuting has to make its own noise (there is
+   nothing else to confirm it worked) and muting has to make none. */
 $('#bMute').onclick = ()=>{
   sfx.init();
   sfx.setMuted(!sfx.muted);
   Save.data.muted = sfx.muted; Save.flush();
   paintMute();
-  if(!sfx.muted) sfx.click();
+  if(!sfx.muted) sfx.toggle(true);
 };
+
+/* Master volume. Separate from mute because turning the sound down and
+   turning it off are different intentions — see Save.load. The tick on every
+   change is the point: you cannot set a level you cannot hear. */
+function paintVol(){
+  const s = $('#vol');
+  s.value = Math.round(sfx.vol * 100);
+  s.title = `Volume ${s.value}%`;
+}
+$('#vol').oninput = ()=>{
+  sfx.init();
+  sfx.setVol(+$('#vol').value / 100);
+  paintVol();
+  sfx.tab();
+};
+$('#vol').onchange = ()=>{ Save.data.vol = sfx.vol; Save.flush(); };
 
 /* --- champion names --- */
 function commitNames(){
@@ -239,7 +306,6 @@ function setMode(vsAI){
   $('#modeHint').textContent = vsAI
     ? 'Best of five. Draft a round, fight it, then draft again knowing what beat you — the AI answers your build too.'
     : 'Best of five, hotseat. Both players draft from one shared pool between every round — take a card and your rival cannot.';
-  sfx.click();
 }
 $('#bVs1').onclick = ()=>setMode(true);
 $('#bVs2').onclick = ()=>setMode(false);
@@ -249,11 +315,11 @@ $('#bVs2').onclick = ()=>setMode(false);
    are holding is what makes "draft six long cooldowns" a plan rather than
    an accident. */
 $('#bStart').onclick = ()=>{
-  commitNames(); sfx.click();
+  commitNames();
   Sel.open({both: !G.vsAI, after: startDraft});
 };
 $('#bDelve').onclick = ()=>{
-  commitNames(); sfx.click();
+  commitNames();
   /* Ascension modifiers are chosen before the champion, because which
      modifiers are on changes which champion is the right answer. With
      nothing unlocked yet the screen still opens and explains itself —
@@ -261,24 +327,23 @@ $('#bDelve').onclick = ()=>{
   Asc.open();
 };
 /* No champion select: the daily deals both champions from the seed. */
-$('#bDaily').onclick = ()=>{ commitNames(); sfx.click(); Daily.begin(); };
+$('#bDaily').onclick = ()=>{ commitNames(); Daily.begin(); };
 $('#bGhost').onclick = ()=>Ghost.fromInput();
 /* Enter in the code field is the same as pressing the button — a pasted
    code is almost always followed by a return key. */
-$('#ghostCode').onkeydown = e=>{ if(e.key === 'Enter') Ghost.fromInput(); };
-$('#ascBack').onclick = ()=>{ sfx.click(); show('title'); renderRecord(); };
+$('#ghostCode').onkeydown = e=>{ if(e.key === 'Enter'){ sfx.init(); Ghost.fromInput(); } };
+$('#ascBack').onclick = ()=>{ show('title'); renderRecord(); };
 $('#ascGo').onclick   = ()=>{
-  sfx.click();
   Sel.open({both:false, after: ()=>Run.start(), back: ()=>Asc.open()});
 };
-$('#bLab').onclick   = ()=>{ sfx.click(); show('lab'); renderCodex(); };
+$('#bLab').onclick   = ()=>{ show('lab'); renderCodex(); };
 /* leaving the codex must stop the preview loop — otherwise 46 canvases
    keep animating behind the battle for the rest of the session */
-$('#bBack').onclick  = ()=>{ sfx.click(); Preview.reset(); show('title'); };
+$('#bBack').onclick  = ()=>{ Preview.reset(); show('title'); };
 $('#bReroll').onclick = reroll;
 $('#bDone').onclick   = endTurn;
-$('#bAgain').onclick  = ()=>{ sfx.click(); beginBattle(); };
-$('#bNew').onclick    = ()=>{ sfx.click(); startDraft(); };
+$('#bAgain').onclick  = ()=>beginBattle();
+$('#bNew').onclick    = ()=>startDraft();
 $$('#speedbar [data-spd]').forEach(b => {
   b.onclick = () => setSpeed(+b.dataset.spd);
 });
@@ -307,7 +372,9 @@ addEventListener('keydown', e=>{
 });
 /* boot */
 sfx.muted = !!Save.data.muted;
+sfx.setVol(Save.data.vol);   // safe before init(): apply() no-ops without a graph
 paintMute();
+paintVol();
 setMode(true);
 renderRecord();
 fitCanvas();

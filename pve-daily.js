@@ -336,9 +336,9 @@ const Run = {
       ? `cleared all ${PVE_MAX_STAGE} stages`
       : `fell on stage ${this.stage}`, {asc:this.ascLvl});
     $('#bAgain').textContent = 'New Run';
-    $('#bAgain').onclick = ()=>{ sfx.click(); Run.start(); };
+    $('#bAgain').onclick = ()=>Run.start();
     $('#bNew').textContent = 'Main Menu';
-    $('#bNew').onclick = ()=>{ sfx.click(); restoreDuelButtons(); show('title'); renderRecord(); };
+    $('#bNew').onclick = ()=>{ restoreDuelButtons(); show('title'); renderRecord(); };
     cleared ? sfx.win() : sfx.lose();
   },
 
@@ -386,9 +386,9 @@ const Run = {
 
   /* The refresh button. One reroll per offer; regenerates all three cards. */
   reroll(){
-    if(this.rerollLeft <= 0) return;
+    if(this.rerollLeft <= 0){ sfx.deny(); return; }
     this.rerollLeft--;
-    sfx.click();
+    sfx.tab();
     this.rollOffer();
   },
 
@@ -417,9 +417,9 @@ function restoreDuelButtons(){
   const sr = $('#shareRow');
   if(sr){ sr.style.display = 'none'; sr.innerHTML = ''; }
   $('#bAgain').textContent = 'Rematch (same builds)';
-  $('#bAgain').onclick = ()=>{ sfx.click(); beginBattle(); };
+  $('#bAgain').onclick = ()=>beginBattle();
   $('#bNew').textContent = 'New Draft';
-  $('#bNew').onclick = ()=>{ sfx.click(); startDraft(); };
+  $('#bNew').onclick = ()=>startDraft();
 }
 
 /* Reward cards reuse the draft's `.card-s` styling on purpose: a skill
@@ -447,6 +447,7 @@ function renderOffer(headline, picks){
     const gained = activeCombos(after).filter(c=>!liveIds.has(c.id));
     const el = document.createElement('div');
     el.className = 'card-s' + (gained.length?' willcombo':'');
+    el.dataset.sfx = 'none';         // Run.take sounds the acquire
     el.innerHTML = `
       <div class="tierbar" style="background:${sk.col}"></div>
       <div class="tag" style="color:${sk.col}">${TIER_NAME[sk.tier]} · ${sk.kind}</div>
@@ -487,115 +488,367 @@ function renderOffer(headline, picks){
    stays single-file. The context can only start after a user gesture
    (browser autoplay policy), so init() is called from the first click.
    Every call is wrapped: audio failing must never break the fight.
+
+   The graph, from a voice out to the speakers:
+
+     source → [envelope] → [pan] ─┬───────── dry ──────────┐
+                                  └→ [send] → [convolver] ─┤
+                                                           ↓
+        busSfx / busUi / busAmb → master(vol) → limiter → destination
+
+   Three buses so the interface sits UNDER combat rather than competing
+   with it, and a limiter last so a master loud enough to actually hear
+   still survives eight impacts landing in the same frame.
+
+   Randomness here uses rnd()/Math.random(), NEVER the seeded RNG in
+   sim-engine.js: dailies, ghosts and build codes are reproducible from
+   its exact draw sequence, so pulling one number for a sound would
+   silently change the match that sound belongs to.
    ═══════════════════════════════════════════════════════════════ */
 const sfx = {
-  ac:null, master:null, ready:false, muted:false,
+  ac:null, master:null, limiter:null, ready:false, muted:false, vol:0.8,
+  busSfx:null, busUi:null, busAmb:null, verb:null, verbSend:null,
+  live:0,                  // voices currently sounding
+  MAX_VOICES:28,
+  _hits:{},                // event key -> recent fire times, for stack()
+
   init(){
     if(this.ready) return;
     try{
       const AC = window.AudioContext || window.webkitAudioContext;
       if(!AC) return;
-      this.ac = new AC();
-      this.master = this.ac.createGain();
-      this.master.gain.value = this.muted ? 0 : 0.32;
-      this.master.connect(this.ac.destination);
+      const ac = this.ac = new AC();
+
+      /* Peaks, not tone: this exists so raising the master from the old 0.32
+         to something audible does not clip the moment a volley lands. */
+      const lim = this.limiter = ac.createDynamicsCompressor();
+      lim.threshold.value = -10; lim.knee.value = 6; lim.ratio.value = 12;
+      lim.attack.value = 0.003; lim.release.value = 0.15;
+      lim.connect(ac.destination);
+
+      const master = this.master = ac.createGain();
+      master.gain.value = this.muted ? 0 : this.vol;
+      master.connect(lim);
+
+      const bus = g => { const n = ac.createGain(); n.gain.value = g; n.connect(master); return n; };
+      this.busSfx = bus(0.85);
+      this.busUi  = bus(0.50);
+      this.busAmb = bus(0.30);
+
+      /* Reverb from a generated impulse response rather than a file, for the
+         same reason every other sound here is generated. Without it each
+         voice arrives with no space around it, which is most of why the mix
+         reads as thin. */
+      try{
+        const v = this.verb = ac.createConvolver();
+        v.buffer = this.impulse(1.5, 2.6);
+        const send = this.verbSend = ac.createGain();
+        send.gain.value = 1;
+        send.connect(v); v.connect(master);
+      }catch(e){ this.verb = this.verbSend = null; }
+
       this.ready = true;
     }catch(e){ /* no audio available; game continues silently */ }
   },
-  resume(){ try{ if(this.ac && this.ac.state==='suspended') this.ac.resume(); }catch(e){} },
-  setMuted(m){
-    this.muted = m;
-    try{ if(this.master) this.master.gain.value = m ? 0 : 0.32; }catch(e){}
+
+  /* Stereo IR: noise under an exponential tail, lowpassed harder as the tail
+     decays, so it reads as a stone arena and not a bright metal box. */
+  impulse(dur, decay){
+    const ac = this.ac, sr = ac.sampleRate, n = Math.floor(sr*dur);
+    const buf = ac.createBuffer(2, n, sr);
+    for(let c=0;c<2;c++){
+      const d = buf.getChannelData(c);
+      let lp = 0;
+      for(let i=0;i<n;i++){
+        const t = i/n;
+        lp += ((Math.random()*2-1) - lp) * (0.35 - 0.25*t);
+        d[i] = lp * Math.pow(1-t, decay);
+      }
+    }
+    return buf;
   },
-  /* one-shot tone with an exponential decay envelope */
-  tone(freq, dur, type='sine', gain=0.5, slideTo=null, delay=0){
-    if(!this.ready || this.muted) return;
+
+  resume(){
     try{
-      const t0 = this.ac.currentTime + delay;
-      const o = this.ac.createOscillator(), g = this.ac.createGain();
-      o.type = type;
-      o.frequency.setValueAtTime(freq, t0);
-      if(slideTo) o.frequency.exponentialRampToValueAtTime(Math.max(1,slideTo), t0+dur);
-      g.gain.setValueAtTime(0.0001, t0);
-      g.gain.exponentialRampToValueAtTime(gain, t0+Math.min(0.02,dur*0.2));
-      g.gain.exponentialRampToValueAtTime(0.0001, t0+dur);
-      o.connect(g); g.connect(this.master);
-      o.start(t0); o.stop(t0+dur+0.02);
+      if(this.ac && this.ac.state==='suspended') this.ac.resume();
+      /* a context suspended mid-voice never fires onended, so the budget can
+         drift upward across tab switches until nothing plays at all */
+      this.live = 0;
     }catch(e){}
   },
-  /* filtered noise burst — impacts, explosions */
-  noise(dur, gain=0.4, freq=900, q=1, delay=0){
+  setMuted(m){ this.muted = m; this.apply(); },
+  /* A junk value keeps the current level rather than falling to 0 — `+v || 0`
+     would read a missing save field as silence, which is indistinguishable
+     from a broken build. */
+  setVol(v){ const n = +v; this.vol = clamp(isFinite(n) ? n : this.vol, 0, 1); this.apply(); },
+  apply(){
+    try{ if(this.master) this.master.gain.value = this.muted ? 0 : this.vol; }catch(e){}
+  },
+
+  /* arena x → stereo position. Fighter 1 holds the left of the mix and
+     fighter 2 the right, so a fight has width instead of arriving from a
+     single point in the middle of your head. */
+  panOf(x){
+    return typeof x === 'number' ? clamp((x/ARENA_W)*2 - 1, -1, 1) * 0.75 : 0;
+  },
+
+  /* A rain skill can land ten impacts inside one frame. Uncapped they stack
+     into clipping mush, and the eleventh identical click carries no
+     information anyway, so voices past the budget are simply dropped. */
+  take(){ if(this.live >= this.MAX_VOICES) return false; this.live++; return true; },
+  freeOn(node){ node.onended = ()=>{ this.live = Math.max(0, this.live-1); }; },
+
+  /* How many times `key` already fired in the last 40ms. Callers roll gain
+     off and widen detune by this, so a volley reads as one thickening swell
+     rather than N copies of the same sound fighting each other. */
+  stack(key){
+    const now = this.ac ? this.ac.currentTime : 0;
+    const a = this._hits[key] || (this._hits[key] = []);
+    while(a.length && now - a[0] > 0.04) a.shift();
+    a.push(now);
+    return a.length - 1;
+  },
+
+  /* Shared voice tail: [pan] → bus, plus a parallel reverb send. Sources
+     bring their own envelope and connect into the node returned, so layers
+     of one voice can share its position without sharing its envelope. */
+  sink(bus, pan, wet){
+    const ac = this.ac;
+    let head;
+    if(pan && ac.createStereoPanner){
+      head = ac.createStereoPanner();
+      head.pan.value = clamp(pan, -1, 1);
+    } else head = ac.createGain();
+    head.connect(bus || this.busSfx);
+    if(wet > 0 && this.verbSend){
+      const s = ac.createGain(); s.gain.value = wet;
+      head.connect(s); s.connect(this.verbSend);
+    }
+    return head;
+  },
+  /* percussive envelope: near-instant attack, exponential decay */
+  env(t0, dur, gain, into){
+    const g = this.ac.createGain();
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(Math.max(0.0002, gain), t0+Math.min(0.02, dur*0.2));
+    g.gain.exponentialRampToValueAtTime(0.0001, t0+dur);
+    g.connect(into);
+    return g;
+  },
+
+  /* One-shot tone. The first six arguments are the original positional
+     signature — battle-render.js calls this directly — and everything new
+     lives in the trailing options object:
+       pan     stereo position, -1..1 (use panOf for arena coordinates)
+       cents   randomise pitch by ±cents, so repeats are not identical
+       partial add a quiet harmonic at this multiple, for body
+       wet     reverb send, 0..1
+       bus     destination bus; defaults to busSfx                        */
+  tone(freq, dur, type='sine', gain=0.5, slideTo=null, delay=0, opt){
     if(!this.ready || this.muted) return;
+    const O = opt || {};
     try{
-      const t0 = this.ac.currentTime + delay;
-      const n = Math.max(1, Math.floor(this.ac.sampleRate*dur));
-      const buf = this.ac.createBuffer(1, n, this.ac.sampleRate);
+      if(!this.take()) return;
+      const ac = this.ac, t0 = ac.currentTime + delay;
+      const k = O.cents ? Math.pow(2, rnd(O.cents, -O.cents)/1200) : 1;
+      const head = this.sink(O.bus, O.pan, O.wet === undefined ? 0.16 : O.wet);
+      const mk = (mult, amp)=>{
+        const o = ac.createOscillator();
+        o.type = type;
+        o.frequency.setValueAtTime(freq*k*mult, t0);
+        if(slideTo) o.frequency.exponentialRampToValueAtTime(Math.max(1, slideTo*k*mult), t0+dur);
+        o.connect(this.env(t0, dur, gain*amp, head));
+        o.start(t0); o.stop(t0+dur+0.02);
+        return o;
+      };
+      this.freeOn(mk(1, 1));          // only the fundamental holds the budget slot
+      if(O.partial) mk(O.partial, 0.34);
+    }catch(e){}
+  },
+
+  /* Filtered noise burst — impacts, explosions. Same rule as tone(): the
+     five positional arguments are the original ones, extras go in opt, and
+     `sweepTo` additionally sweeps the filter for whooshes. */
+  noise(dur, gain=0.4, freq=900, q=1, delay=0, opt){
+    if(!this.ready || this.muted) return;
+    const O = opt || {};
+    try{
+      if(!this.take()) return;
+      const ac = this.ac, t0 = ac.currentTime + delay;
+      const n = Math.max(1, Math.floor(ac.sampleRate*dur));
+      const buf = ac.createBuffer(1, n, ac.sampleRate);
       const d = buf.getChannelData(0);
       for(let i=0;i<n;i++) d[i] = (Math.random()*2-1) * (1 - i/n);
-      const src = this.ac.createBufferSource(); src.buffer = buf;
-      const bp = this.ac.createBiquadFilter();
-      bp.type='bandpass'; bp.frequency.value=freq; bp.Q.value=q;
-      const g = this.ac.createGain();
+      const src = ac.createBufferSource(); src.buffer = buf;
+      const bp = ac.createBiquadFilter();
+      bp.type = O.filter || 'bandpass';
+      bp.Q.value = q;
+      const f = O.cents ? freq*Math.pow(2, rnd(O.cents, -O.cents)/1200) : freq;
+      bp.frequency.setValueAtTime(f, t0);
+      if(O.sweepTo) bp.frequency.exponentialRampToValueAtTime(Math.max(20, O.sweepTo), t0+dur);
+      const g = ac.createGain();
       g.gain.setValueAtTime(gain, t0);
       g.gain.exponentialRampToValueAtTime(0.0001, t0+dur);
-      src.connect(bp); bp.connect(g); g.connect(this.master);
+      src.connect(bp); bp.connect(g);
+      g.connect(this.sink(O.bus, O.pan, O.wet === undefined ? 0.16 : O.wet));
       src.start(t0); src.stop(t0+dur+0.02);
+      this.freeOn(src);
     }catch(e){}
   },
+
+  /* Low-end body: a fast downward sine sweep with a click on the front. This
+     is what "weight" is made of, and what impacts had none of. */
+  thump(freq, dur, gain, opt){
+    const O = opt || {};
+    this.tone(freq, dur, 'sine', gain, freq*0.42, 0,
+      {pan:O.pan, bus:O.bus, cents:O.cents === undefined ? 20 : O.cents,
+       wet:O.wet === undefined ? 0.1 : O.wet});
+    this.noise(0.02, gain*0.5, 2200, 0.8, 0, {pan:O.pan, bus:O.bus, wet:0});
+  },
+  /* ── interface ──
+     One grammar so navigation has a direction you can hear: confirm rises,
+     back falls, tab is dry and neutral, deny refuses to resolve at all.
+     Everything here goes to busUi, which sits below combat, so a click
+     during a fight never steps on the fight. */
+  ui(freq, dur, type, gain, slideTo, delay, wet){
+    this.tone(freq, dur, type, gain, slideTo, delay,
+      {bus:this.busUi, wet:wet === undefined ? 0.12 : wet, cents:18});
+  },
+  /* two layers: a short pitched blip for the press, a noise tick for the
+     contact. One bare oscillator is what made the old click read as a beep. */
+  click(){
+    this.ui(700, 0.045, 'triangle', 0.30, 620);
+    this.noise(0.018, 0.10, 2700, 1.1, 0, {bus:this.busUi, wet:0.1, cents:150});
+  },
+  confirm(){
+    this.ui(523, 0.09, 'triangle', 0.26);
+    this.ui(784, 0.15, 'triangle', 0.20, null, 0.055, 0.2);
+  },
+  back(){
+    this.ui(523, 0.08, 'triangle', 0.22);
+    this.ui(349, 0.16, 'triangle', 0.18, null, 0.05, 0.2);
+  },
+  tab(){ this.ui(560, 0.035, 'square', 0.16); },
+  pick(){
+    this.ui(660, 0.06, 'triangle', 0.24);
+    this.ui(990, 0.10, 'sine', 0.15, null, 0.045, 0.24);
+  },
+  toggle(on){
+    if(on) this.ui(480, 0.07, 'triangle', 0.24, 720);
+    else   this.ui(480, 0.09, 'triangle', 0.22, 300);
+  },
+  /* The refusal: unpitched, damped, going nowhere. An action that did NOT
+     happen must not sound like one that did — every failed buy, empty
+     reroll and locked modifier used to be completely silent. */
+  deny(){
+    this.noise(0.09, 0.22, 180, 1.6, 0, {bus:this.busUi, wet:0.06});
+    this.tone(150, 0.13, 'square', 0.16, 118, 0, {bus:this.busUi, wet:0.05});
+  },
+  /* screen change — air moving, deliberately close to subliminal */
+  whoosh(){
+    this.noise(0.28, 0.08, 400, 0.7, 0,
+      {bus:this.busUi, wet:0.3, sweepTo:1800, cents:120});
+  },
+
   /* --- game events --- */
-  click(){ this.tone(420, 0.05, 'triangle', 0.20); },
-  buy(){   this.tone(660, 0.07, 'triangle', 0.22); this.tone(990, 0.09, 'sine', 0.13, null, 0.05); },
-  fuse(){  [523,659,784,1047].forEach((f,i)=>this.tone(f, 0.16, 'triangle', 0.20, null, i*0.055)); },
-  basic(){ this.noise(0.05, 0.14, 1500, 1.2); },
+  buy(){   this.tone(660, 0.07, 'triangle', 0.22, null, 0, {bus:this.busUi, cents:20});
+           this.tone(990, 0.09, 'sine', 0.13, null, 0.05, {bus:this.busUi, wet:0.22}); },
+  fuse(){  [523,659,784,1047].forEach((f,i)=>
+             this.tone(f, 0.16, 'triangle', 0.20, null, i*0.055,
+               {bus:this.busUi, wet:0.28, partial:2})); },
+  /* Every repeatable combat sound randomises pitch, length and timbre, and
+     rolls off against stack() — a battle fires dozens of these, and identical
+     repeats are exactly what made the mix monotonous. */
+  basic(x){
+    const p = this.panOf(x), n = this.stack('basic'), k = 1/(1+0.5*n);
+    this.noise(rnd(0.06,0.035), 0.17*k, rnd(1900,1250), 1.2, 0, {pan:p, cents:90});
+    this.tone(rnd(300,240), 0.05, 'square', 0.06*k, 170, 0, {pan:p, wet:0.08});
+  },
   /* cast pitch tracks tier so the mix tells you what just fired */
-  cast(sk){
-    const base = 150 + (sk.tier||1)*55;
-    this.tone(base, 0.16, 'sawtooth', 0.16, base*2.1);
-    this.noise(0.09, 0.10, 700+(sk.tier||1)*260, 0.9);
+  cast(sk, x){
+    const tier = (sk && sk.tier) || 1;
+    const p = this.panOf(x), n = this.stack('cast'), k = 1/(1+0.4*n);
+    const base = 150 + tier*55;
+    this.tone(base, rnd(0.20,0.14), 'sawtooth', 0.18*k, base*2.1, 0,
+      {pan:p, cents:45, partial:1.5, wet:0.2});
+    this.noise(rnd(0.11,0.07), 0.11*k, 700+tier*260, 0.9, 0, {pan:p, cents:110});
+    /* a bright top on the big tiers, so scale is audible and not just numeric */
+    if(tier >= 3) this.tone(base*4, 0.18, 'triangle', 0.06*k, base*6, 0.02,
+      {pan:p, wet:0.3, cents:60});
   },
-  hit(){ this.noise(0.07, 0.22, 420, 0.8); this.tone(120, 0.09, 'square', 0.12, 70); },
+  /* transient + body + occasional ring, in three timbres, so consecutive
+     hits are related without being the same sound twice */
+  hit(x){
+    const n = this.stack('hit');
+    if(n > 6) return;                 // past this it is only mud
+    const p = this.panOf(x), k = 1/(1+0.55*n), v = ~~rnd(3);
+    this.noise(rnd(0.09,0.055), 0.26*k, [380,470,300][v], 0.8, 0, {pan:p, cents:120});
+    this.thump(rnd(138,112), rnd(0.14,0.09), 0.24*k, {pan:p, cents:40+n*30});
+    if(v === 1) this.tone(rnd(1900,1500), 0.05, 'triangle', 0.05*k, null, 0.005,
+      {pan:p, wet:0.3, cents:200});
+  },
   /* crit is the audio counterpart of the slow-mo: impact, then a downward
-     sweep under the stretched time, so the sound matches what you see */
-  crit(){
-    this.noise(0.16, 0.42, 260, 0.6);
-    this.tone(90, 0.5, 'square', 0.22, 42);
-    this.tone(1400, 1.25, 'sine', 0.12, 180, 0.04);
-    this.noise(1.0, 0.10, 200, 0.5, 0.10);
+     sweep under the stretched time, so the sound matches what you see.
+     It also sends hardest to the reverb — the big moment gets the room. */
+  crit(x){
+    const p = this.panOf(x);
+    this.noise(rnd(0.19,0.13), 0.46, rnd(300,220), 0.6, 0, {pan:p, wet:0.4});
+    this.thump(rnd(96,80), 0.55, 0.30, {pan:p, wet:0.3});
+    this.tone(90, 0.5, 'square', 0.22, 42, 0, {pan:p, wet:0.35, partial:1.5});
+    this.tone(rnd(1500,1300), 1.25, 'sine', 0.12, 180, 0.04, {pan:p, wet:0.5, cents:50});
+    this.noise(1.0, 0.10, 200, 0.5, 0.10, {pan:p, wet:0.45});
   },
-  heal(){ this.tone(520, 0.2, 'sine', 0.14, 880); },
-  shield(){ this.tone(300, 0.22, 'triangle', 0.15, 460); },
+  heal(x){
+    const p = this.panOf(x);
+    this.tone(520, rnd(0.24,0.18), 'sine', 0.16, 880, 0, {pan:p, cents:35, partial:2, wet:0.3});
+  },
+  shield(x){
+    const p = this.panOf(x);
+    this.tone(300, 0.22, 'triangle', 0.17, 460, 0, {pan:p, cents:30, partial:1.5, wet:0.26});
+  },
   /* CC shares one grammar — a hard transient then a tail — but each kind
      bends pitch differently so you can hear which lock landed without
      looking: stun slams down, freeze crystallises upward, silence closes
      to a dead stop, root drags low and stays. */
-  cc(kind){
+  cc(kind, x){
+    const p = this.panOf(x);
     if(kind==='stun'){
-      this.noise(0.12, 0.34, 1100, 0.7);
-      this.tone(320, 0.28, 'square', 0.20, 90);
+      this.noise(rnd(0.14,0.10), 0.36, 1100, 0.7, 0, {pan:p, cents:80});
+      this.tone(320, 0.28, 'square', 0.22, 90, 0, {pan:p, cents:40, partial:1.5, wet:0.28});
+      this.thump(rnd(120,96), 0.22, 0.20, {pan:p});
     } else if(kind==='freeze'){
-      this.noise(0.14, 0.22, 2600, 2.4);
-      this.tone(760, 0.42, 'triangle', 0.16, 1500);
+      this.noise(rnd(0.16,0.12), 0.24, 2600, 2.4, 0, {pan:p, cents:120});
+      this.tone(760, 0.42, 'triangle', 0.18, 1500, 0, {pan:p, cents:40, partial:2, wet:0.4});
     } else if(kind==='silence'){
-      this.tone(600, 0.30, 'sine', 0.18, 120);
-      this.noise(0.07, 0.14, 500, 1.4);
+      this.tone(600, 0.30, 'sine', 0.20, 120, 0, {pan:p, cents:30, wet:0.24});
+      this.noise(rnd(0.09,0.055), 0.15, 500, 1.4, 0, {pan:p, cents:70});
     } else {
-      this.noise(0.20, 0.26, 240, 0.8);
-      this.tone(140, 0.40, 'sawtooth', 0.18, 70);
+      this.noise(rnd(0.22,0.17), 0.28, 240, 0.8, 0, {pan:p, cents:70});
+      this.tone(140, 0.40, 'sawtooth', 0.20, 70, 0, {pan:p, cents:35, partial:2, wet:0.3});
     }
   },
   /* deliberately small and dry — a resist is an absence, not an event */
-  resist(){ this.tone(240, 0.10, 'sine', 0.09, 190); },
-  death(){
-    this.noise(0.7, 0.42, 180, 0.5);
-    this.tone(180, 0.9, 'sawtooth', 0.26, 38);
+  resist(x){ this.tone(240, 0.10, 'sine', 0.10, 190, 0, {pan:this.panOf(x), cents:50, wet:0.06}); },
+  death(x){
+    const p = this.panOf(x);
+    this.noise(0.7, 0.44, 180, 0.5, 0, {pan:p, wet:0.45});
+    this.tone(180, 0.9, 'sawtooth', 0.28, 38, 0, {pan:p, cents:25, partial:1.5, wet:0.4});
+    this.thump(rnd(70,54), 0.7, 0.26, {pan:p, wet:0.4});
   },
-  sudden(){ [330,247].forEach((f,i)=>this.tone(f, 0.5, 'square', 0.20, f*0.6, i*0.3)); },
-  win(){ [523,659,784,1047,1319].forEach((f,i)=>this.tone(f, 0.42, 'triangle', 0.22, null, i*0.1)); },
+  sudden(){
+    /* the ambience answers this too — see amb.urgent */
+    this.amb.urgent = true;
+    [330,247].forEach((f,i)=>this.tone(f, 0.5, 'square', 0.20, f*0.6, i*0.3,
+      {wet:0.4, partial:1.5}));
+  },
+  win(){ [523,659,784,1047,1319].forEach((f,i)=>
+           this.tone(f, 0.42, 'triangle', 0.24, null, i*0.1, {wet:0.34, partial:2})); },
   /* the win figure inverted — same rhythm walking down, and the last note
      sags instead of landing, so a loss reads as the fanfare not arriving */
   lose(){
-    [523,440,330].forEach((f,i)=>this.tone(f, 0.40, 'triangle', 0.20, null, i*0.12));
-    this.tone(247, 0.75, 'sawtooth', 0.18, 130, 0.36);
+    [523,440,330].forEach((f,i)=>this.tone(f, 0.40, 'triangle', 0.22, null, i*0.12,
+      {wet:0.3, partial:1.5}));
+    this.tone(247, 0.75, 'sawtooth', 0.20, 130, 0.36, {wet:0.4, partial:1.5});
   },
 
   /* ── champion ultimates ──
@@ -604,38 +857,133 @@ const sfx = {
      then each id bends it: Reversal settles and holds (a door closing),
      Total Force climbs (something winding up), Suppression inverts —
      it falls, because the whole skill is a reversal of direction. */
-  ult(id){
-    this.tone(180, 0.10, 'square', 0.16, 300);
+  ult(id, x){
+    const p = this.panOf(x);
+    this.tone(180, 0.10, 'square', 0.18, 300, 0, {pan:p, wet:0.3, partial:1.5});
     if(id === 'reversal'){
-      this.tone(330, 0.55, 'triangle', 0.20, 262, 0.05);
-      this.noise(0.30, 0.16, 380, 0.7, 0.04);
+      this.tone(330, 0.55, 'triangle', 0.22, 262, 0.05, {pan:p, wet:0.42, partial:2});
+      this.noise(0.30, 0.17, 380, 0.7, 0.04, {pan:p, wet:0.4});
+      this.thump(rnd(84,66), 0.5, 0.22, {pan:p, wet:0.35});
     } else if(id === 'totalforce'){
-      [392,523,659,880].forEach((f,i)=>this.tone(f, 0.22, 'sawtooth', 0.15, null, 0.04+i*0.045));
+      [392,523,659,880].forEach((f,i)=>this.tone(f, 0.22, 'sawtooth', 0.16, null, 0.04+i*0.045,
+        {pan:p, wet:0.36, partial:2}));
     } else {
-      this.tone(880, 0.42, 'sine', 0.18, 330, 0.05);
-      this.noise(0.18, 0.14, 2200, 1.8, 0.04);
+      this.tone(880, 0.42, 'sine', 0.20, 330, 0.05, {pan:p, wet:0.44, partial:2});
+      this.noise(0.18, 0.15, 2200, 1.8, 0.04, {pan:p, wet:0.38});
     }
   },
   /* small, dry and metallic — a blow landing on something that refuses it */
-  absorb(){ this.tone(520, 0.09, 'square', 0.10, 720); this.noise(0.05, 0.10, 1800, 1.4); },
+  absorb(x){
+    const p = this.panOf(x), k = 1/(1+0.5*this.stack('absorb'));
+    this.tone(520, 0.09, 'square', 0.11*k, 720, 0, {pan:p, cents:60, wet:0.08});
+    this.noise(rnd(0.07,0.04), 0.11*k, 1800, 1.4, 0, {pan:p, cents:130});
+  },
   /* the payout borrows the crit recipe deliberately: it IS the big moment */
-  nova(){
-    this.noise(0.22, 0.5, 220, 0.55);
-    this.tone(110, 0.7, 'sawtooth', 0.26, 44);
-    [523,784,1047].forEach((f,i)=>this.tone(f, 0.6, 'triangle', 0.17, null, 0.05+i*0.05));
+  nova(x){
+    const p = this.panOf(x);
+    this.noise(0.22, 0.52, 220, 0.55, 0, {pan:p, wet:0.45});
+    this.tone(110, 0.7, 'sawtooth', 0.28, 44, 0, {pan:p, wet:0.4, partial:1.5});
+    this.thump(rnd(76,58), 0.6, 0.28, {pan:p, wet:0.4});
+    [523,784,1047].forEach((f,i)=>this.tone(f, 0.6, 'triangle', 0.18, null, 0.05+i*0.05,
+      {pan:p, wet:0.48, partial:2}));
   },
   /* a wasted window: a short descent that lands on nothing */
-  fizzle(){ this.tone(300, 0.26, 'sine', 0.11, 120); this.noise(0.10, 0.08, 400, 0.9, 0.03); },
-  /* the catch: an upward whip, then the throw back down */
-  steal(){
-    this.noise(0.10, 0.26, 2600, 2.2);
-    this.tone(300, 0.16, 'triangle', 0.18, 1200);
-    this.tone(1200, 0.34, 'sine', 0.15, 420, 0.09);
+  fizzle(x){
+    const p = this.panOf(x);
+    this.tone(300, 0.26, 'sine', 0.12, 120, 0, {pan:p, cents:40, wet:0.14});
+    this.noise(0.10, 0.09, 400, 0.9, 0.03, {pan:p, cents:80});
   },
-  force(){
-    this.noise(0.14, 0.30, 900, 1.1);
-    [262,392,523,784].forEach((f,i)=>this.tone(f, 0.30, 'square', 0.14, null, i*0.04));
-    this.tone(1319, 0.5, 'sine', 0.12, 1760, 0.12);
+  /* the catch: an upward whip, then the throw back down */
+  steal(x){
+    const p = this.panOf(x);
+    this.noise(0.10, 0.27, 2600, 2.2, 0, {pan:p, cents:90});
+    this.tone(300, 0.16, 'triangle', 0.19, 1200, 0, {pan:p, wet:0.28, partial:1.5});
+    this.tone(1200, 0.34, 'sine', 0.16, 420, 0.09, {pan:p, wet:0.4});
+  },
+  force(x){
+    const p = this.panOf(x);
+    this.noise(0.14, 0.31, 900, 1.1, 0, {pan:p, wet:0.3});
+    [262,392,523,784].forEach((f,i)=>this.tone(f, 0.30, 'square', 0.15, null, i*0.04,
+      {pan:p, wet:0.34, partial:1.5}));
+    this.tone(1319, 0.5, 'sine', 0.13, 1760, 0.12, {pan:p, wet:0.44});
+  },
+
+  /* ═══ ambience ═══
+     Battles used to be silent between events, which is the other half of why
+     they read as monotonous — variation in the effects does nothing about
+     dead air. A drone under the fight fills that space and doubles as a
+     tension meter: as either side nears death the filter opens, the two
+     oscillators pull apart and the pulse quickens.
+
+     Deliberately NOT gated on `muted`: the master gain already silences it,
+     so muting and unmuting mid-fight brings the bed straight back instead of
+     leaving the rest of the round dry. */
+  amb: {
+    on:false, timer:0, tension:0, urgent:false, drone:null, gain:null, filt:null,
+
+    start(){
+      if(this.on || !sfx.ready) return;
+      try{
+        const ac = sfx.ac, t0 = ac.currentTime;
+        const g = this.gain = ac.createGain();
+        g.gain.setValueAtTime(0.0001, t0);
+        g.gain.exponentialRampToValueAtTime(0.9, t0 + 1.4);   // fade in, never a hard start
+        const f = this.filt = ac.createBiquadFilter();
+        f.type = 'lowpass'; f.frequency.value = 200; f.Q.value = 3;
+        f.connect(g); g.connect(sfx.busAmb);
+        /* two near-unison lows plus a fifth: the beating between the first
+           two is what keeps a held drone from sounding like a test tone */
+        this.drone = [55, 55.4, 82.5].map((hz, i)=>{
+          const o = ac.createOscillator();
+          o.type = i === 2 ? 'sine' : 'sawtooth';
+          o.frequency.value = hz;
+          const vg = ac.createGain();
+          vg.gain.value = i === 2 ? 0.05 : 0.09;
+          o.connect(vg); vg.connect(f);
+          o.start();
+          return o;
+        });
+        this.on = true; this.urgent = false; this.tension = 0;
+        this.beat();
+      }catch(e){ this.on = false; }
+    },
+
+    /* self-rescheduling rather than setInterval, because the rate itself is
+       what tension changes */
+    beat(){
+      if(!this.on) return;
+      if(!sfx.muted && !document.hidden)
+        sfx.thump(rnd(46,38), 0.3, 0.16 + this.tension*0.14, {bus:sfx.busAmb, wet:0.3});
+      const rate = (1.7 - this.tension*0.95) / (this.urgent ? 2 : 1);
+      this.timer = setTimeout(()=>this.beat(), Math.max(260, rate*1000));
+    },
+
+    /* 0..1, fed every frame from syncHud, which already has both HP fractions */
+    set(t){
+      if(!this.on) return;
+      this.tension = clamp(t, 0, 1);
+      try{
+        this.filt.frequency.value = 200 + this.tension*520;
+        this.drone[1].frequency.value = 55.4 + this.tension*1.9;
+      }catch(e){}
+    },
+
+    /* Idempotent, and called from show() as well as the result screens: a
+       drone that followed the player back to the title would never stop. */
+    stop(){
+      if(!this.on) return;
+      this.on = false;
+      clearTimeout(this.timer); this.timer = 0;
+      try{
+        const t0 = sfx.ac.currentTime, g = this.gain.gain;
+        g.cancelScheduledValues(t0);
+        g.setValueAtTime(Math.max(0.0001, g.value), t0);
+        g.exponentialRampToValueAtTime(0.0001, t0 + 0.8);
+        for(const o of this.drone) o.stop(t0 + 0.85);
+      }catch(e){}
+      this.drone = this.gain = this.filt = null;
+      this.urgent = false; this.tension = 0;
+    },
   },
 };
 
@@ -647,7 +995,7 @@ const sfx = {
 const SAVE_KEY = 'arcane-clash-v1';
 const Save = {
   data: { names:['AZURE WARDEN','CRIMSON TYRANT'], wins:[0,0], draws:0, history:[], muted:false,
-          pveBest:0, speed:1, champs:[null,null], daily:null,
+          vol:0.8, pveBest:0, speed:1, champs:[null,null], daily:null,
           /* Discovery ledger. `skills`/`combos` map id -> first-seen day key,
              so the codex can both gate content and say WHEN you found it.
              Kept as an object rather than an array because ids are the stable
@@ -670,6 +1018,10 @@ const Save = {
         this.data.draws = +d.draws || 0;
         if(Array.isArray(d.history)) this.data.history = d.history.slice(0,40);
         this.data.muted = !!d.muted;
+        /* Volume is separate from mute on purpose: turning the sound down and
+           turning it off are different intentions, and a player who set 0.3
+           last session should not get 0.8 back just because they unmuted. */
+        if(typeof d.vol === 'number' && isFinite(d.vol)) this.data.vol = clamp(d.vol, 0, 1);
         /* a player who set 4x last session almost certainly wants it again
            on stage 1 of the next run */
         if([1,2,4].includes(+d.speed)) this.data.speed = +d.speed;
@@ -837,7 +1189,7 @@ const Daily = {
   },
 
   begin(){
-    if(this.doneToday()){ flashMsg('Today\'s challenge is already spent'); return; }
+    if(this.doneToday()){ flashMsg('Today\'s challenge is already spent', 'deny'); return; }
     const key = this.dayKey();
     const seed = this.seedFor(key);
     RNG.seed(seed);
@@ -905,12 +1257,12 @@ const Daily = {
   bindResultButtons(){
     $('#bAgain').textContent = 'Main Menu';
     $('#bAgain').onclick = ()=>{
-      sfx.click(); G.daily = false; RNG.scramble();
+      G.daily = false; RNG.scramble();
       restoreDuelButtons(); show('title'); renderRecord();
     };
     $('#bNew').textContent = 'Free Draft';
     $('#bNew').onclick = ()=>{
-      sfx.click(); G.daily = false; RNG.scramble();
+      G.daily = false; RNG.scramble();
       restoreDuelButtons(); startDraft();
     };
   },
@@ -1137,10 +1489,12 @@ function attachShare(build, blurb, opt){
   const asc = opt && opt.asc ? ` · ascension ${opt.asc}` : '';
   host.innerHTML =
     `<input id="shareCode" class="codein" readonly value="${code}">
-     <button class="btn" id="bCopy">Copy build code</button>`;
+     <button class="btn" id="bCopy" data-sfx="none">Copy build code</button>`;
   $('#bCopy').onclick = ()=>{
     const txt = `Arcane Clash — ${blurb}${asc}\n${code}`;
-    const done = ()=>{ sfx.click(); flashMsg('Build code copied — send it to a rival'); };
+    /* data-sfx="none" above: a copy that only left the code selected has not
+       copied anything, and must not sound as though it had */
+    const done = ()=>{ sfx.confirm(); flashMsg('Build code copied — send it to a rival'); };
     try{
       if(navigator.clipboard && navigator.clipboard.writeText)
         navigator.clipboard.writeText(txt).then(done, ()=>fallback());
@@ -1152,7 +1506,7 @@ function attachShare(build, blurb, opt){
       /* execCommand is deprecated but remains the only synchronous copy
          available on a file:// page; the selection is the real fallback. */
       try{ document.execCommand('copy'); done(); }
-      catch(e2){ flashMsg('Press Ctrl+C to copy the selected code'); }
+      catch(e2){ flashMsg('Press Ctrl+C to copy the selected code', 'deny'); }
       el.setAttribute('readonly','');
     }
   };
@@ -1189,14 +1543,16 @@ const Ghost = {
     const el = $('#ghostCode');
     const parsed = decodeBuild(el ? el.value : '');
     if(!parsed){
-      flashMsg('That build code is not valid');
+      flashMsg('That build code is not valid', 'deny');
       if(el){ el.focus(); el.select(); }
       return;
     }
     this.build = parsed.build;
     this.champ = parsed.champ;
     commitNames();
-    sfx.click();
+    /* #bGhost is data-sfx="none": a rejected code already denied above, and a
+       good one is a commit, so it rises */
+    sfx.confirm();
     Sel.open({both:false, after: ()=>Ghost.start()});
   },
 
@@ -1230,10 +1586,10 @@ const Ghost = {
      against the same ghost rather than replaying the identical fight. */
   bindResultButtons(){
     $('#bAgain').textContent = 'New answer, same ghost';
-    $('#bAgain').onclick = ()=>{ sfx.click(); Ghost.start(); };
+    $('#bAgain').onclick = ()=>Ghost.start();
     $('#bNew').textContent = 'Main Menu';
     $('#bNew').onclick = ()=>{
-      sfx.click(); Ghost.active = false;
+      Ghost.active = false;
       restoreDuelButtons(); show('title'); renderRecord();
     };
   },
@@ -1258,12 +1614,14 @@ const Asc = {
   toggle(id){
     const a = this.state(), mod = ASC_BY_ID[id];
     if(!mod || !this.unlocked(mod)){
-      flashMsg(`Reach stage ${mod ? mod.at : '?'} to unlock this`);
+      flashMsg(`Reach stage ${mod ? mod.at : '?'} to unlock this`, 'deny');
       return;
     }
     const i = a.on.indexOf(id);
     if(i >= 0) a.on.splice(i,1); else a.on.push(id);
-    sfx.click();
+    /* rises when switching a modifier on, falls when switching it off, so the
+       row tells you which way it went without reading it */
+    sfx.toggle(i < 0);
     Save.flush();
     this.render();
   },
@@ -1291,7 +1649,12 @@ const Asc = {
           <span>${'◆'.repeat(mod.w)}</span></div>
         <div class="ad">${mod.desc}</div>
         ${open ? '' : `<div class="req">Locked — reach stage ${mod.at}</div>`}`;
-      if(open) el.onclick = ()=>this.toggle(mod.id);
+      /* Locked rows are bound too: toggle() refuses and says so. Previously
+         they had no handler at all, so pressing one was completely silent and
+         read as a dead element rather than a locked one. The delegate skips
+         .locked, and toggle() owns the sound either way — hence data-sfx. */
+      el.dataset.sfx = 'none';
+      el.onclick = ()=>this.toggle(mod.id);
       host.append(el);
     }
     /* The button states the commitment, so "Descend" is never ambiguous
@@ -1455,13 +1818,13 @@ function paintSkillPanel(){
   const e = panelEntries[panelIdx];
   const tabs = panelEntries.length > 1
     ? `<div class="dmg-tabs">${panelEntries.map((p,i) =>
-        `<button class="btn seg${i===panelIdx?' on':''}" data-pi="${i}">${p.label}</button>`).join('')}</div>`
+        `<button class="btn seg${i===panelIdx?' on':''}" data-pi="${i}" data-sfx="tab">${p.label}</button>`).join('')}</div>`
     : '';
   el.innerHTML = `<div class="dmg-head">
       <span class="dmg-title">${panelEntries.length > 1 ? 'Skill breakdown' : e.label}</span>${tabs}
     </div>${skillChartHTML(ledgerRows(e.stats, e.build))}`;
   el.querySelectorAll('[data-pi]').forEach(b => {
-    b.onclick = () => { sfx.click(); panelIdx = +b.dataset.pi; paintSkillPanel(); };
+    b.onclick = () => { panelIdx = +b.dataset.pi; paintSkillPanel(); };
   });
 }
 
@@ -1520,10 +1883,10 @@ function showRoundResult(w){
      round. You now know what they brought.</span>${Discovery.banner(G.roundFresh)}`;
   w === 0 ? sfx.win() : sfx.lose();
   $('#bAgain').textContent = `Draft round ${G.round + 1} →`;
-  $('#bAgain').onclick = ()=>{ sfx.click(); openDraftRound(G.round + 1); };
+  $('#bAgain').onclick = ()=>openDraftRound(G.round + 1);
   $('#bNew').textContent = 'Abandon match';
   $('#bNew').onclick = ()=>{
-    sfx.click(); restoreDuelButtons(); show('title'); renderRecord();
+    restoreDuelButtons(); show('title'); renderRecord();
   };
   show('result');
 }
@@ -1560,10 +1923,10 @@ function showSeriesResult(){
     ? `won a series ${G.wins[0]}–${G.wins[1]}`
     : `lost a series ${G.wins[0]}–${G.wins[1]}`);
   $('#bAgain').textContent = 'New Match';
-  $('#bAgain').onclick = ()=>{ sfx.click(); startDraft(); };
+  $('#bAgain').onclick = ()=>startDraft();
   $('#bNew').textContent = 'Main Menu';
   $('#bNew').onclick = ()=>{
-    sfx.click(); restoreDuelButtons(); show('title'); renderRecord();
+    restoreDuelButtons(); show('title'); renderRecord();
   };
   show('result');
 }

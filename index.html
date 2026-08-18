@@ -267,6 +267,38 @@ h1 span{
 .codein:focus{outline:none; box-shadow:var(--focus); border-color:#4a7cf0}
 .codein::placeholder{color:#4d5878; letter-spacing:.02em}
 
+/* ---------- sound: mute + master volume ----------
+   A range input has no cross-browser shorthand, so the track and thumb are
+   spelled out once per engine. Both recipes reuse .btn's own gradient and
+   border so the pair reads as one control group. */
+.sndrow{display:flex; align-items:center; gap:9px}
+.volsl{
+  appearance:none; -webkit-appearance:none; background:transparent;
+  width:92px; height:20px; margin:0; cursor:pointer; outline:none; border-radius:999px;
+}
+.volsl::-webkit-slider-runnable-track{
+  height:6px; border-radius:999px; border:1px solid var(--line);
+  background:linear-gradient(180deg,#070b16,#0b101f); box-shadow:inset 0 1px 3px #0006;
+}
+.volsl::-moz-range-track{
+  height:6px; border-radius:999px; border:1px solid var(--line);
+  background:linear-gradient(180deg,#070b16,#0b101f); box-shadow:inset 0 1px 3px #0006;
+}
+.volsl::-webkit-slider-thumb{
+  appearance:none; -webkit-appearance:none; margin-top:-5px;
+  width:15px; height:15px; border-radius:50%;
+  border:1px solid #33406e; background:linear-gradient(180deg,#28325a,#151b2e);
+  box-shadow:0 1px 3px #0008; transition:border-color .15s;
+}
+.volsl::-moz-range-thumb{
+  width:14px; height:14px; border-radius:50%;
+  border:1px solid #33406e; background:linear-gradient(180deg,#28325a,#151b2e);
+  box-shadow:0 1px 3px #0008; transition:border-color .15s;
+}
+.volsl:hover::-webkit-slider-thumb{border-color:#4a7cf0}
+.volsl:hover::-moz-range-thumb{border-color:#4a7cf0}
+.volsl:focus-visible{box-shadow:var(--focus)}
+
 /* ---------- draft ---------- */
 #draft{gap:12px}
 .dhead{display:flex; align-items:center; gap:14px}
@@ -942,6 +974,11 @@ th{color:var(--mute); font:600 9.5px/1 var(--sans); letter-spacing:.12em; text-t
   .btn{padding:10px 15px; min-height:40px}
   .btn.seg{padding:4px 8px; min-height:25px}
   .sellb{padding:7px 9px}
+  /* a 20px-tall slider is not a thumb target; the track stays 6px, only the
+     grab area grows */
+  .volsl{height:40px; width:110px}
+  .volsl::-webkit-slider-thumb{margin-top:-6px; width:18px; height:18px}
+  .volsl::-moz-range-thumb{width:17px; height:17px}
 }
 @keyframes screenFade{from{opacity:0} to{opacity:1}}
 
@@ -986,22 +1023,30 @@ th{color:var(--mute); font:600 9.5px/1 var(--sans); letter-spacing:.12em; text-t
           <input id="nm2" class="nameinput" maxlength="18" placeholder="CRIMSON TYRANT"></label>
       </div>
       <div class="row" style="justify-content:center;margin-top:6px;gap:8px">
-        <button class="btn seg on" id="bVs1">1 Player · vs AI</button>
-        <button class="btn seg" id="bVs2">2 Players · hotseat</button>
+        <button class="btn seg on" id="bVs1" data-sfx="tab">1 Player · vs AI</button>
+        <button class="btn seg" id="bVs2" data-sfx="tab">2 Players · hotseat</button>
       </div>
       <div class="row" style="justify-content:center;margin-top:20px">
-        <button class="btn pri" id="bStart">Draft &amp; Fight</button>
-        <button class="btn pri" id="bDelve" style="--pri:#ffce5a">Delve · PvE</button>
-        <button class="btn pri" id="bDaily" style="--pri:#7fe0a0">Daily</button>
+        <button class="btn pri" id="bStart" data-sfx="confirm">Draft &amp; Fight</button>
+        <button class="btn pri" id="bDelve" style="--pri:#ffce5a" data-sfx="confirm">Delve · PvE</button>
+        <button class="btn pri" id="bDaily" style="--pri:#7fe0a0" data-sfx="confirm">Daily</button>
         <button class="btn" id="bLab">Codex</button>
-        <button class="btn" id="bMute" title="Toggle sound">♪ On</button>
+        <!-- Mute and level are two controls because they are two intentions:
+             turning the sound down is not turning it off, and coming back from
+             a mute should restore the level you chose, not a default. -->
+        <div class="sndrow">
+          <button class="btn" id="bMute" title="Toggle sound" data-sfx="none">♪ On</button>
+          <input id="vol" class="volsl" type="range" min="0" max="100" step="1"
+                 aria-label="Volume" data-sfx="none">
+        </div>
       </div>
       <!-- Async PvP: paste a build code and fight that exact loadout. No
            server — the code IS the opponent. -->
       <div class="coderow">
         <input id="ghostCode" class="codein" maxlength="120" spellcheck="false"
                placeholder="Paste a build code — fight their ghost">
-        <button class="btn" id="bGhost">Fight ghost</button>
+        <!-- outcome-dependent: a bad code denies, a good one confirms -->
+        <button class="btn" id="bGhost" data-sfx="none">Fight ghost</button>
       </div>
       <!-- Daily and Discovery sit side by side: both are ~100px tall status
            panels, and stacking them pushed the card past the app's 760px
@@ -1024,14 +1069,16 @@ th{color:var(--mute); font:600 9.5px/1 var(--sans); letter-spacing:.12em; text-t
         <h2>Choose your champion</h2>
         <span class="grow"></span>
         <span class="stats" id="selHint" style="color:#7d88ad"></span>
-        <button class="btn" id="selBack">Back</button>
+        <button class="btn" id="selBack" data-sfx="back">Back</button>
       </div>
       <div id="champCards"></div>
       <div class="selfoot">
         <p class="sub" id="selNote" style="margin:0; max-width:none; font-size:11.5px; color:#5b6488">
           One charge per battle, fired by hand. Your drafted skills still cast themselves.</p>
         <span class="grow"></span>
-        <button class="btn pri" id="selGo" disabled>Confirm</button>
+        <!-- Sel.confirm owns the sound: it also runs from Enter and from a
+             double-click on a card, and it must not fire on an invalid pick. -->
+        <button class="btn pri" id="selGo" disabled data-sfx="none">Confirm</button>
       </div>
     </div>
   </section>
@@ -1044,8 +1091,9 @@ th{color:var(--mute); font:600 9.5px/1 var(--sans); letter-spacing:.12em; text-t
       <span class="stats" id="roundTxt">Round 1 / 5</span>
       <span class="stats" id="seriesTxt"></span>
       <span class="grow"></span>
-      <button class="btn" id="bReroll">Reroll · 2</button>
-      <button class="btn pri" id="bDone">End Turn</button>
+      <!-- both refuse when they cannot act, so both pick their own sound -->
+      <button class="btn" id="bReroll" data-sfx="none">Reroll · 2</button>
+      <button class="btn pri" id="bDone" data-sfx="none">End Turn</button>
     </div>
     <div id="comboBar"></div>
 
@@ -1103,10 +1151,13 @@ th{color:var(--mute); font:600 9.5px/1 var(--sans); letter-spacing:.12em; text-t
         <div class="slowtag" id="slowtag">Critical</div>
         <div class="ultbar" id="ultbar"></div>
         <div class="speedbar" id="speedbar">
-          <button class="btn seg on" data-spd="1">1×</button>
-          <button class="btn seg" data-spd="2">2×</button>
-          <!-- <button class="btn seg" data-spd="4">4×</button> -->
-          <button class="btn seg" id="bSkip" title="Resolve this battle instantly">Skip</button>
+          <!-- setSpeed and skipBattle own their sounds: the 1/2/3 and S keys
+               reach the same code without ever touching these buttons. -->
+          <button class="btn seg on" data-spd="1" data-sfx="none">1×</button>
+          <button class="btn seg" data-spd="2" data-sfx="none">2×</button>
+          <!-- <button class="btn seg" data-spd="4" data-sfx="none">4×</button> -->
+          <button class="btn seg" id="bSkip" data-sfx="none"
+                  title="Resolve this battle instantly">Skip</button>
         </div>
       </div>
       <div class="rail r2" id="rail2">
@@ -1141,7 +1192,7 @@ th{color:var(--mute); font:600 9.5px/1 var(--sans); letter-spacing:.12em; text-t
       <p class="big" style="font-size:26px;margin:0 0 4px">CHOOSE ONE</p>
       <p class="sub" id="offSub" style="margin:0 auto 20px"></p>
       <div id="offCards"></div>
-      <div style="margin-top:16px"><button id="offReroll" class="btn" style="font-size:12px">↻ Refresh (1 left)</button></div>
+      <div style="margin-top:16px"><button id="offReroll" class="btn" data-sfx="none" style="font-size:12px">↻ Refresh (1 left)</button></div>
       <p class="sub" id="offKit" style="font-size:11.5px;margin-top:18px;color:#5b6488"></p>
     </div>
   </section>
@@ -1152,8 +1203,8 @@ th{color:var(--mute); font:600 9.5px/1 var(--sans); letter-spacing:.12em; text-t
       <b style="font-size:16px">Delve · Ascension</b>
       <span class="stats" id="ascStat"></span>
       <span class="grow"></span>
-      <button class="btn" id="ascBack">Back</button>
-      <button class="btn pri" id="ascGo" style="--pri:#ffce5a">Descend</button>
+      <button class="btn" id="ascBack" data-sfx="back">Back</button>
+      <button class="btn pri" id="ascGo" style="--pri:#ffce5a" data-sfx="confirm">Descend</button>
     </div>
     <p class="sub" style="max-width:none;margin:8px 0 0;font-size:11.5px;color:#5b6488">
       Each modifier makes the delve harder and is unlocked by how deep you have
@@ -1172,7 +1223,7 @@ th{color:var(--mute); font:600 9.5px/1 var(--sans); letter-spacing:.12em; text-t
       <span class="stats" id="labStat">Every skill, every level. Study before you draft.</span>
       <span class="grow"></span>
       <div class="tabs" id="codexView"></div>
-      <button class="btn" id="bBack">Back</button>
+      <button class="btn" id="bBack" data-sfx="back">Back</button>
     </div>
     <div class="dhead" style="margin-top:8px">
       <div class="tabs" id="codexTabs"></div>

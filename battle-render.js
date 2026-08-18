@@ -147,10 +147,10 @@ const World = {
              140 battles): median crit is 1.62% of max HP, so a 3.5% floor left
              11% of battles with NO slow-mo at all. 1.5% passes ~53% of crits
              and yields ~3.2 slow-mos per 13.6s battle, zero empty battles. */
-          if(d.dmg >= d.tgt.max*0.015){ Time.slowmo(d.x,d.y); sfx.crit(); }
-          else sfx.hit();
+          if(d.dmg >= d.tgt.max*0.015){ Time.slowmo(d.x,d.y); sfx.crit(d.x); }
+          else sfx.hit(d.x);
           log(`<b style="color:#fff">CRITICAL</b> — ${d.src.name} hits for ${Math.round(d.dmg)}`);
-        } else if(d.dmg > d.tgt.max*0.004) sfx.hit();   /* skip DoT ticks */
+        } else if(d.dmg > d.tgt.max*0.004) sfx.hit(d.x);   /* skip DoT ticks */
         break;
       }
       case 'crit': break;
@@ -166,7 +166,7 @@ const World = {
           floats.push({x:tx, y:ty-46, vy:-40, life:.85, max:.85,
             txt:'RESIST', col:'#8b93a8'});
           rings.push({x:tx,y:ty,r:30,vr:120,life:.3,max:.3,col:'#8b93a8',w:2});
-          sfx.resist();
+          sfx.resist(tx);
           log(`${d.tgt.name} <b style="color:#8b93a8">resists</b> ${v.name.toLowerCase()}`);
           break;
         }
@@ -184,7 +184,7 @@ const World = {
           txt:v.name, col:v.col});
         shake = Math.min(26, shake + 7);
         flashScr = Math.max(flashScr, 0.3); flashCol = v.col;
-        sfx.cc(d.kind);
+        sfx.cc(d.kind, tx);
         log(`${d.src.name} — <b style="color:${v.col}">${v.name}</b> ${d.tgt.name} (${d.dur.toFixed(1)}s)`);
         break;
       }
@@ -220,7 +220,7 @@ const World = {
       }
       case 'ghost': ghosts.push({x:d.x,y:d.y,life:.34,max:.34,side:d.side,col:d.col,el:d.el}); break;
       case 'heal':
-        if(d.amt > 12) sfx.heal();
+        if(d.amt > 12) sfx.heal(d.f.x);
         floats.push({x:d.f.x,y:d.f.y-60,vy:-46,life:.9,max:.9,txt:'+'+Math.round(d.amt),col:'#8dffa8'});
         /* motes drift UP and gather — restoration reads as something being
            given back, the opposite of damage scattering away */
@@ -233,7 +233,7 @@ const World = {
         }
         break;
       case 'buff': {
-        sfx.shield();
+        sfx.shield(d.f.x);
         const e = efxOf(d.sk);
         rings.push({x:d.f.x,y:d.f.y,r:60,vr:-90,life:.55,max:.55,col:d.sk.col,w:4});
         /* the gather-in motes wear the caster's element: a summon's pact
@@ -246,7 +246,7 @@ const World = {
         break;
       }
       case 'cast':
-        if(d.basic) sfx.basic(); else sfx.cast(d.sk);
+        if(d.basic) sfx.basic(d.f.x); else sfx.cast(d.sk, d.f.x);
         if(!d.basic){
           log(`${d.f.name} casts <b style="color:${d.sk.col}">${d.sk.name}</b>`);
           flareSkill(d.f, d.idx);
@@ -267,7 +267,7 @@ const World = {
         if(!f.minion) break;            // champions and mobs enter silently
         if(f.petArt === 'direwolves'){
           /* wolves come up out of the floor: dirt, low scuff, small kick */
-          sfx.noise(0.18, 0.18, 520, 0.9);
+          sfx.noise(0.18, 0.18, 520, 0.9, 0, {pan:sfx.panOf(f.x), cents:80});
           for(let i=0;i<16;i++){
             const a = rnd(TAU);
             spawn({x:f.x+rnd(16,-16), y:f.y+16, vx:Math.cos(a)*rnd(180,60), vy:rnd(-30,-130),
@@ -278,8 +278,8 @@ const World = {
         } else if(f.petArt === 'bonebulwark'){
           /* the sentinel is assembled, not conjured: shards fly OUT and the
              floor takes the hit, which is what sells it as the tanky one */
-          sfx.tone(90, 0.30, 'square', 0.20, 44);
-          sfx.noise(0.22, 0.24, 300, 0.7);
+          sfx.tone(90, 0.30, 'square', 0.20, 44, 0, {pan:sfx.panOf(f.x), partial:1.5, wet:0.3});
+          sfx.noise(0.22, 0.24, 300, 0.7, 0, {pan:sfx.panOf(f.x), cents:60});
           for(let i=0;i<15;i++)
             spawn({x:f.x+rnd(20,-20), y:f.y+rnd(10,-16), vx:rnd(170,-170), vy:rnd(-60,-230),
               col:'#e8dcc0', life:rnd(.8,.4), r:rnd(3.6,1.6), grav:420, drag:0.92,
@@ -290,7 +290,7 @@ const World = {
         } else {
           /* the wraith is pulled INWARD from the dark — motes converge and
              the ring collapses, the opposite gesture from the other two */
-          sfx.tone(660, 0.34, 'sine', 0.12, 300);
+          sfx.tone(660, 0.34, 'sine', 0.12, 300, 0, {pan:sfx.panOf(f.x), partial:2, wet:0.36});
           for(let i=0;i<20;i++){
             const a = rnd(TAU), rr = rnd(90,50);
             spawn({x:f.x+Math.cos(a)*rr, y:f.y+Math.sin(a)*rr*0.7,
@@ -305,7 +305,7 @@ const World = {
          behind, so an expiry never reads as "something just died" */
       case 'unsummon': {
         const f = d.f;
-        sfx.tone(400, 0.22, 'sine', 0.08, 170);
+        sfx.tone(400, 0.22, 'sine', 0.08, 170, 0, {pan:sfx.panOf(f.x), wet:0.2});
         smoke(f.x, f.y, f.petArt === 'bonebulwark' ? '#4a3f2c' : '#2a2440', 5);
         for(let i=0;i<12;i++)
           spawn({x:f.x+rnd(14,-14), y:f.y+rnd(10,-10), vx:rnd(50,-50), vy:rnd(-40,-110),
@@ -319,14 +319,14 @@ const World = {
            `quiet` flag (set when pets are cleaned up) gets a small, local
            puff — no full-screen flash, no world-stopping shake. */
         if(d.quiet || f.minion){
-          sfx.death();
+          sfx.death(f.x);
           rings.push({x:f.x,y:f.y,r:8,vr:520,life:.5,max:.5,col:f.side?'#ff8fae':'#7fd4ff',w:5});
           burst(f.x,f.y,'#ffffff',24,1.6); burst(f.x,f.y,f.side?'#ff5d7a':'#5fd0ff',30,1.4);
           smoke(f.x,f.y,'#241c33',8);
           shake = Math.min(26, shake+6);
           break;
         }
-        sfx.death();
+        sfx.death(f.x);
         for(let w=0;w<3;w++) rings.push({x:f.x,y:f.y,r:10+w*20,vr:700-w*140,life:.9,max:.9,
           col:w?f.side?'#ff8fae':'#7fd4ff':'#fff',w:9-w*2});
         burst(f.x,f.y,'#ffffff',90,3); burst(f.x,f.y,f.side?'#ff5d7a':'#5fd0ff',110,2.6);
@@ -373,7 +373,7 @@ const World = {
          a button; the screen has to answer. */
       case 'ultCast': {
         const f = d.f, c = d.champ;
-        sfx.ult(c.id);
+        sfx.ult(c.id, f.x);
         shake = Math.min(26, shake + 7);
         flashScr = 0.5; flashCol = c.acc;
         rings.push({x:f.x, y:f.y, r:16, vr:520, life:.45, max:.45, col:'#fff', w:4});
@@ -389,7 +389,7 @@ const World = {
          and it is the ward that flashes rather than the body. */
       case 'ultAbsorb': {
         const f = d.f;
-        sfx.absorb();
+        sfx.absorb(f.x);
         floats.push({x:f.x+rnd(16,-16), y:f.y-34, vy:-44, life:.85, max:.85,
           txt:'+'+Math.round(d.amt), col:'#ffce5a'});
         rings.push({x:f.x, y:f.y, r:56, vr:-150, life:.34, max:.34, col:'#ffce5a', w:3});
@@ -403,7 +403,7 @@ const World = {
       /* the payout: everything banked leaves at once */
       case 'ultNova': {
         const f = d.f;
-        sfx.nova();
+        sfx.nova(f.x);
         Time.slowmo(f.x, f.y);
         shake = Math.min(26, shake + 16);
         flashScr = 0.95; flashCol = '#ffce5a';
@@ -422,7 +422,7 @@ const World = {
          a silent no-op would read as a bug rather than as a misplay. */
       case 'ultFizzle': {
         const f = d.f;
-        sfx.fizzle();
+        sfx.fizzle(f.x);
         floats.push({x:f.x, y:f.y-46, vy:-30, life:1, max:1, txt:'WASTED', col:'#6b7398'});
         rings.push({x:f.x, y:f.y, r:58, vr:-90, life:.4, max:.4, col:'#6b7398', w:2});
         log(`<b style="color:#8b93b8">REVERSAL</b> — nothing arrived. The window closes empty.`);
@@ -431,7 +431,7 @@ const World = {
       /* the theft. Two bursts: white at the catch, cyan trailing after the
          projectile as it turns — the eye needs to be told to follow it back. */
       case 'ultSteal': {
-        sfx.steal();
+        sfx.steal(d.x);
         Time.slowmo(d.x, d.y);
         shake = Math.min(26, shake + 9);
         flashScr = 0.7; flashCol = '#9fe6ff';
@@ -450,7 +450,7 @@ const World = {
          that is where the player will look to see what they just bought */
       case 'ultForce': {
         const f = d.f;
-        sfx.force();
+        sfx.force(f.x);
         shake = Math.min(26, shake + 10);
         flashScr = 0.8; flashCol = '#ffce5a';
         rings.push({x:f.x, y:f.y, r:14, vr:900, life:.5, max:.5, col:'#ffce5a', w:5});
@@ -2258,7 +2258,9 @@ function setSpeed(v, quiet){
   if(bar) bar.querySelectorAll('[data-spd]').forEach(b =>
     b.classList.toggle('on', +b.dataset.spd === battleSpeed));
   if(!quiet){
-    sfx.click();
+    /* the buttons are data-sfx="none" so this covers the 1/2/3 keys too;
+       tab() rather than click() because changing speed commits nothing */
+    sfx.init(); sfx.tab();
     Save.data.speed = battleSpeed; Save.flush();
   }
 }
@@ -2267,9 +2269,13 @@ function setSpeed(v, quiet){
    deterministic and cheap, so this is just the same stepping loop with
    the renderer skipped — the outcome is identical to watching it. */
 function skipBattle(){
-  if(!sim || sim.over !== null) return;
+  /* off-screen means the S key, not the button, so stay silent */
   if(!$('#battle').classList.contains('on')) return;
-  sfx.click();
+  sfx.init();
+  /* nothing left to skip is a refusal, and a refusal has a sound now —
+     the button used to click as though it had done something */
+  if(!sim || sim.over !== null){ sfx.deny(); return; }
+  sfx.confirm();
   const wasHeadless = World.headless;
   World.headless = true;                 // no particles for frames nobody sees
   let guard = 0;
@@ -2434,6 +2440,11 @@ function syncHud(){
   const m = Math.floor(elapsed/60), s = Math.floor(elapsed%60);
   $('#clock').textContent = `${m}:${String(s).padStart(2,'0')}`;
 
+  /* The ambience reads tension off the bars we just drew — whichever side is
+     closest to dying sets it, so the bed tightens for a comeback as readily
+     as for a rout. Free: both fractions are already computed above. */
+  sfx.amb.set(1 - Math.min(a.hp/a.max, bFrac));
+
   /* Both rails render the SAME number of slots so the arena is framed
      symmetrically — a 3-skill build next to a 7-skill one used to leave
      one column dangling. The short side is padded with dim empty
@@ -2510,12 +2521,14 @@ function tryUlt(f){
   if(!sim || sim.over !== null || !f || !f.champ) return;
   if(!$('#battle').classList.contains('on')) return;
   sfx.init();
-  if(!f.ultReady || f.ultT > 0){ sfx.resist(); return; }
+  /* A refused press is an interface event, not a combat one: it gets deny()
+     rather than the arena's resist blip, which is deliberately near-silent
+     and left a dead button feeling like a broken button. */
+  if(!f.ultReady || f.ultT > 0){ sfx.deny(); return; }
   /* silence is the one CC that blocks it, and a silenced press must SAY so
      — otherwise a dead button reads as a broken button */
   if(f.has('silence')){
-    sfx.resist();
-    flashMsg(`${f.name} is silenced`);
+    flashMsg(`${f.name} is silenced`, 'deny');
     return;
   }
   sim.fireUlt(f);

@@ -196,12 +196,15 @@ function startDraft(){
 /* owned entry: {count, lvl}  — 3 copies fuse into next level */
 function buy(i, silent){
   const cell = G.shop[i], me = G.p[G.turn];
-  if(!cell || cell.bought) return;
+  if(!cell) return;
+  /* A spent card is a refusal like any other. It used to be silent, which on
+     touch — where the card is tapped twice — read as a dropped input. */
+  if(cell.bought){ if(!silent) sfx.deny(); return; }
   const c = COST[cell.sk.tier];
-  if(me.gold < c) { if(!silent) flashMsg('Not enough gold'); return; }
+  if(me.gold < c) { if(!silent) flashMsg('Not enough gold', 'deny'); return; }
   const distinct = Object.keys(me.own).length;
   if(!me.own[cell.sk.id] && distinct >= MAX_SKILLS){
-    if(!silent) flashMsg(`Loadout full — ${MAX_SKILLS} skills max`); return;
+    if(!silent) flashMsg(`Loadout full — ${MAX_SKILLS} skills max`, 'deny'); return;
   }
   me.gold -= c; cell.bought = true;
   const e = me.own[cell.sk.id] || (me.own[cell.sk.id] = {count:0, lvl:1, spent:0});
@@ -216,7 +219,13 @@ function fuseFx(sk){
   sfx.fuse();
 }
 let msgTimer = 0;
-function flashMsg(txt){
+/* `kind` is optional and defaults to silent, because several callers already
+   play their own sound and would otherwise double up. Passing 'deny' is what
+   gives a refused action a voice — every failed buy, empty reroll and locked
+   modifier used to show this toast in complete silence. */
+function flashMsg(txt, kind){
+  if(kind === 'deny') sfx.deny();
+  else if(kind === 'ok') sfx.pick();
   let el = $('#toast');
   if(!el){
     el = document.createElement('div'); el.id='toast';
@@ -250,18 +259,21 @@ function sell(id, silent){
   const copies = e.count + 3*(e.lvl - 1);
   for(let i=0;i<copies;i++) returnToPool(BY_ID[id]);
   delete me.own[id];
-  if(!silent){ sfx.click(); flashMsg(`Sold ${BY_ID[id].name}`); renderDraft(); }
+  /* back(), not click(): buy rises and sell falls, so the pair tells you which
+     direction gold just moved without looking at the counter */
+  if(!silent){ sfx.back(); flashMsg(`Sold ${BY_ID[id].name}`); renderDraft(); }
 }
 
 function reroll(){
   const me = G.p[G.turn];
-  if(me.gold < REROLL){ flashMsg('Not enough gold'); return; }
-  me.gold -= REROLL; rollShop(); renderDraft();
+  if(me.gold < REROLL){ flashMsg('Not enough gold', 'deny'); return; }
+  me.gold -= REROLL; sfx.tab(); rollShop(); renderDraft();
 }
 
 function endTurn(){
   const me = G.p[G.turn];
-  if(Object.keys(me.own).length === 0){ flashMsg('Buy at least one skill'); return; }
+  if(Object.keys(me.own).length === 0){ flashMsg('Buy at least one skill', 'deny'); return; }
+  sfx.confirm();
   /* A ghost never drafts — its build was fixed when its owner copied the
      code — so player 2's turn is skipped entirely and the pool is left
      uncontested. Mirroring the ghost card-for-card stays legal; it just
@@ -520,7 +532,7 @@ function renderFoePanel(){
       <div class="nm">${sk.name}</div>
       <div class="fams">${famChips(sk.id)}</div>`;
     /* inspect only — this is the opponent's card, it can never be bought */
-    el.onclick = ()=>{ sfx.click(); showDetail(sk, b.lvl, true); };
+    el.onclick = ()=>showDetail(sk, b.lvl, true);
     el.onmouseenter = ()=>{ if(!TOUCH) showDetail(sk, b.lvl); };
     bench.append(el);
   }
@@ -578,6 +590,9 @@ function renderDraft(){
     const el = document.createElement('div');
     el.className = 'card-s' + (cell.bought?' dead':'') + (armed===i?' armed':'')
       + (gained.length?' willcombo':'');
+    /* buy() picks the sound, because the card has three outcomes: bought,
+       refused for gold or slots, and armed-but-not-yet-bought on touch */
+    el.dataset.sfx = 'none';
     el.innerHTML = `
       <div class="tierbar" style="background:${sk.col}"></div>
       <button class="info" aria-label="Inspect ${sk.name}">i</button>
@@ -630,7 +645,7 @@ function renderDraft(){
       ${mine.length?`<div class="inc">◈ ${mine.map(c=>c.name).join(' · ')}</div>`:''}
       <div class="row"><span class="stats" style="color:#6a769c">${e.lvl<3?`${e.count}/3 to next`:'max level'}</span>
         <span class="grow"></span>
-        <button class="sellb">Sell ⬤${sellValue(id)}</button></div>`;
+        <button class="sellb" data-sfx="none">Sell ⬤${sellValue(id)}</button></div>`;
     el.querySelector('.sellb').onclick = ev=>{ ev.stopPropagation(); sell(id); };
     el.onmouseenter = ()=>{ if(!TOUCH) showDetail(sk, e.lvl); };
     el.onclick = ()=>showDetail(sk, e.lvl, true);
@@ -648,7 +663,7 @@ function showDetail(sk, lvl, open){
       <td>${skillLine(sk,L).split(' · ').slice(d?1:0,-1).join(', ')||'—'}</td></tr>`;
   }).join('');
   $('#detail').innerHTML = `
-    <span class="dclose" role="button" aria-label="Close">✕</span>
+    <span class="dclose" role="button" aria-label="Close" data-sfx="back">✕</span>
     <div style="font-weight:750;font-size:14px;color:${sk.col}">${sk.name}</div>
     <div class="stats" style="margin-bottom:6px">${TIER_NAME[sk.tier]} · ${sk.kind} · ${sk.cd}s cooldown</div>
     <p style="color:#98a3c6;font-size:11.5px;margin:0 0 10px">${sk.txt||''}</p>
@@ -730,6 +745,7 @@ function beginBattle(){
   } else if(Ghost.active){
     log(`A <b style="color:#a97bff">ghost</b> stands in the arena — someone else's build, fought on your terms.`);
   } else log('The gate opens.');
+  sfx.amb.start();
   last = performance.now(); running = true;
 }
 

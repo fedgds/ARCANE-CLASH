@@ -495,7 +495,8 @@ function renderCodex(){
       const b = document.createElement('button');
       b.className = 'tab' + (v===codexView?' on':'');
       b.textContent = lab; b.dataset.v = v;
-      b.onclick = ()=>{ codexView = v; sfx.click();
+      b.dataset.sfx = 'tab';        // .tab is not in SFX_HIT; opt in explicitly
+      b.onclick = ()=>{ codexView = v;
         [...vt.children].forEach(c=>c.classList.toggle('on', c.dataset.v===v));
         paintCodex(); };
       vt.append(b);
@@ -507,7 +508,8 @@ function renderCodex(){
       const b = document.createElement('button');
       b.className = 'tab' + (t===codexTier?' on':'');
       b.textContent = lab; b.dataset.t = t;
-      b.onclick = ()=>{ codexTier = t; sfx.click();
+      b.dataset.sfx = 'tab';
+      b.onclick = ()=>{ codexTier = t;
         [...tabs.children].forEach(c=>c.classList.toggle('on', +c.dataset.t===t));
         paintCodex(); };
       tabs.append(b);
