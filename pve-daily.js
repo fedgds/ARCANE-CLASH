@@ -450,8 +450,8 @@ function renderOffer(headline, picks){
     el.dataset.sfx = 'none';         // Run.take sounds the acquire
     el.innerHTML = `
       <div class="tierbar" style="background:${sk.col}"></div>
-      <div class="tag" style="color:${sk.col}">${TIER_NAME[sk.tier]} · ${sk.kind}</div>
-      <div class="nm">${sk.name}${p.kind==='up'?` <span class="lvl l2">→ LV ${p.lvl}</span>`:''}</div>
+      ${skillCardHead(sk, {size:40,
+        nameExtra: p.kind==='up'?` <span class="lvl l2">→ LV ${p.lvl}</span>`:''})}
       <div class="fams">${famChips(sk.id)}</div>
       <div class="desc">${sk.txt||''}</div>
       ${gained.length?`<div class="willc">▲ ${gained.map(c=>c.name).join(' · ')}</div>`:''}
@@ -460,6 +460,9 @@ function renderOffer(headline, picks){
         <span class="cost" style="color:${p.kind==='up'?'#ffce5a':'#7fe0a0'}">${
           p.kind==='up' ? 'UPGRADE' : 'NEW'}</span></div>`;
     el.onclick = ()=>{ Preview.reset(); Run.take(p); };
+    cardFocus(el, `${skillIconLabel(sk)}. ${p.kind==='up'?`Upgrade to level ${p.lvl}`:'New skill'}.`
+      + ` ${skillLine(sk, p.lvl)}.`
+      + (gained.length?` Completes ${gained.map(c=>c.name).join(', ')}.`:''));
     host.append(el);
   }
 
@@ -1781,7 +1784,8 @@ function skillChartHTML(rows){
     const pct = r.total > 0 ? (r.pct >= 0.05 ? r.pct.toFixed(1)+'%' : '—')
                             : (r.enabler ? '<span title="counted inside other skills">buff</span>' : '—');
     return `<div class="skrow${r.total>0?'':(r.enabler?' buff':' zero')}" title="${tip}">
-      <div class="skname"><i style="background:${r.col}"></i><b>${r.name}</b>${
+      <div class="skname">${BY_ID[r.id] ? skillIcon(BY_ID[r.id], {size:16})
+        : `<i style="background:${r.col}"></i>`}<b>${r.name}</b>${
         r.lvl > 1 ? `<span class="sklvl">LV${r.lvl}</span>` : ''}</div>
       <div class="skbar"><div class="skfill" style="width:${w}%">${parts}</div></div>
       <div class="skpct">${pct}</div>

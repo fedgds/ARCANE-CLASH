@@ -10,7 +10,7 @@
    tag families and combos, and the formulas that turn a skill's power
    budget into concrete numbers.
 
-   The page loads eight CLASSIC scripts (no ES modules), so every
+   The page loads nine CLASSIC scripts (no ES modules), so every
    top-level const/let/class still lands in the one shared script scope
    this code was written for, and it still opens straight off disk over
    file://. Load order IS dependency order:
@@ -20,9 +20,11 @@
      3 codex.js          codex screens and the per-skill preview loop
      4 sim-engine.js     seeded RNG, Fighter, Sim — pure logic, no DOM
      5 battle-render.js  canvas renderer, main loop, HUD sync
-     6 draft.js          gold, rolling shop, fusion, AI drafter
-     7 pve-daily.js      delve, ascension, daily, ghosts, audio, save
-     8 main.js           champion select, nav, event wiring, boot — LAST
+     6 skill-icons.js    the shared skill glyph system — after battle-render
+                         (reads its CC colours), before anything drawing cards
+     7 draft.js          gold, rolling shop, fusion, AI drafter
+     8 pve-daily.js      delve, ascension, daily, ghosts, audio, save
+     9 main.js           champion select, nav, event wiring, boot — LAST
 
    Only top-level EVALUATION is order-sensitive; functions call across
    files freely at runtime, so the groupings above follow subject matter

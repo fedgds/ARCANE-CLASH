@@ -54,6 +54,24 @@ function famChips(id){
 }
 /* combo color for glowing borders — the primary family of the combo */
 function comboCol(c){ return FAMILY[c.fam[0]].col; }
+/* A skill card is a div, so nothing about it was reachable without a
+   mouse. This gives every card the three things it was missing: a tab
+   stop, a spoken name (the drawn icon says tier, delivery, rider and
+   family — this is the same sentence in words), and Enter/Space firing
+   whatever the card's own click does, so the touch arm-then-buy rule and
+   the sell button keep working untouched.
+
+   No role= on purpose: a shop card already contains a real <button>
+   (inspect, sell), and declaring the wrapper a button too would nest one
+   control inside another. */
+function cardFocus(el, label, onInspect){
+  el.tabIndex = 0;
+  el.setAttribute('aria-label', label);
+  el.addEventListener('keydown', ev=>{
+    if(ev.key === 'Enter' || ev.key === ' '){ ev.preventDefault(); el.click(); }
+  });
+  if(onInspect) el.addEventListener('focus', onInspect);
+}
 /* combo bar at the top of the draft screen, showing active combos */
 function renderComboBar(combos){
   const el = $('#comboBar');
@@ -528,12 +546,14 @@ function renderFoePanel(){
     el.className = 'card-s foe';
     el.innerHTML = `
       <div class="tierbar" style="background:${sk.col}"></div>
-      <div class="tag" style="color:${sk.col}">${TIER_NAME[sk.tier]}${b.lvl>1?` · LV${b.lvl}`:''}</div>
-      <div class="nm">${sk.name}</div>
+      ${skillCardHead(sk, {size:28,
+        tag:skillTagText(sk, b.lvl>1?`LV ${b.lvl} · ${skillTagWord(sk)}`:null)})}
       <div class="fams">${famChips(sk.id)}</div>`;
     /* inspect only — this is the opponent's card, it can never be bought */
     el.onclick = ()=>showDetail(sk, b.lvl, true);
     el.onmouseenter = ()=>{ if(!TOUCH) showDetail(sk, b.lvl); };
+    cardFocus(el, `${skillIconLabel(sk)}${b.lvl>1?`, level ${b.lvl}`:''}. ${skillLine(sk,b.lvl)}.`,
+      ()=>showDetail(sk, b.lvl));
     bench.append(el);
   }
   const combos = activeCombos(foe);
@@ -596,8 +616,7 @@ function renderDraft(){
     el.innerHTML = `
       <div class="tierbar" style="background:${sk.col}"></div>
       <button class="info" aria-label="Inspect ${sk.name}">i</button>
-      <div class="tag" style="color:${sk.col}">${TIER_NAME[sk.tier]} · ${sk.kind}</div>
-      <div class="nm">${sk.name}</div>
+      ${skillCardHead(sk)}
       <div class="fams">${famChips(sk.id)}</div>
       <div class="desc">${sk.txt||''}</div>
       ${gained.length?`<div class="willc">▲ ${gained.map(c=>c.name).join(' · ')}</div>`:''}
@@ -605,6 +624,13 @@ function renderDraft(){
         <span class="grow"></span>${armed===i
           ? `<span class="confirm">Tap to buy</span>`
           : `<span class="cost gold">⬤${c}</span>`}</div>`;
+    /* The icon is decorative markup, so the card itself carries the
+       spoken description — and being focusable is what lets a keyboard
+       reach the same inspect-then-buy path a mouse gets. */
+    cardFocus(el, `${skillIconLabel(sk)}. ${skillLine(sk,lvl)}.`
+      + (gained.length?` Completes ${gained.map(c=>c.name).join(', ')}.`:'')
+      + (armed===i ? ' Press again to buy.' : ` Costs ${c} gold.`),
+      ()=>showDetail(sk, lvl));
     el.querySelector('.info').onclick = ev=>{
       ev.stopPropagation();            /* inspect only, never buys */
       showDetail(sk, lvl, true);
@@ -637,7 +663,9 @@ function renderDraft(){
       ? [0,1,2].map(i=>`<div class="pip ${i<e.count?'f':''}"></div>`).join('')
       : `<div class="pip f"></div>`;
     el.innerHTML = `
-      <div class="top"><span class="nm" style="color:${sk.col}">${sk.name}</span>
+      <div class="top">${skillIcon(sk,{size:22,detail:'card'})}
+        <span class="nm" style="color:${sk.col}">${sk.name}</span>
+        <span class="grow"></span>
         <span class="lvl ${e.lvl===2?'l2':e.lvl===3?'l3':''}">LV ${e.lvl}</span></div>
       <div class="fams">${famChips(id)}</div>
       <div class="pips">${pips}</div>
@@ -646,6 +674,9 @@ function renderDraft(){
       <div class="row"><span class="stats" style="color:#6a769c">${e.lvl<3?`${e.count}/3 to next`:'max level'}</span>
         <span class="grow"></span>
         <button class="sellb" data-sfx="none">Sell ⬤${sellValue(id)}</button></div>`;
+    cardFocus(el, `${skillIconLabel(sk)}. Level ${e.lvl}. ${skillLine(sk,e.lvl)}.`
+      + (mine.length?` Feeding ${mine.map(c=>c.name).join(', ')}.`:''),
+      ()=>showDetail(sk, e.lvl));
     el.querySelector('.sellb').onclick = ev=>{ ev.stopPropagation(); sell(id); };
     el.onmouseenter = ()=>{ if(!TOUCH) showDetail(sk, e.lvl); };
     el.onclick = ()=>showDetail(sk, e.lvl, true);
@@ -664,8 +695,15 @@ function showDetail(sk, lvl, open){
   }).join('');
   $('#detail').innerHTML = `
     <span class="dclose" role="button" aria-label="Close" data-sfx="back">✕</span>
-    <div style="font-weight:750;font-size:14px;color:${sk.col}">${sk.name}</div>
-    <div class="stats" style="margin-bottom:6px">${TIER_NAME[sk.tier]} · ${sk.kind} · ${sk.cd}s cooldown</div>
+    <div class="dhero">
+      ${skillIcon(sk, {size:84, label:true})}
+      <div class="dh">
+        <div style="font-weight:750;font-size:14px;color:${sk.col}">${sk.name}</div>
+        <div class="stats">${TIER_NAME[sk.tier]} · ${sk.kind}${
+          skillFxName(sk) ? ' · ' + skillFxName(sk) : ''} · ${sk.cd}s cooldown</div>
+        <div class="fams">${famChips(sk.id)}</div>
+      </div>
+    </div>
     <p style="color:#98a3c6;font-size:11.5px;margin:0 0 10px">${sk.txt||''}</p>
     <table><thead><tr><th>Lvl</th><th>Hit</th><th>DPS</th><th>Effect</th></tr></thead>
     <tbody>${rows}</tbody></table>

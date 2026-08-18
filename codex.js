@@ -602,10 +602,13 @@ function paintSkills(){
     const bd = discBadge('skill', sk.id);
     return `<div class="cx${bd.cls}">
       <div class="tierbar" style="background:${sk.col}"></div>
-      <div class="cxh"><span class="cxn" style="color:${sk.col}">${sk.name}</span>
-        <span class="stats">${TIER_NAME[sk.tier]}</span>
+      <div class="cxh">${skillIcon(sk, {size:28})}
+        <span class="cxn" style="color:${sk.col}">${sk.name}</span>
         <span class="grow"></span>${bd.tag}</div>
-      <div class="dcap"><span>${sk.kind} · demonstration</span></div>
+      <!-- tier rides in the demo caption rather than the header: the icon
+           needs that 35px, and three of the sixty names would otherwise
+           wrap and drag their whole grid row taller -->
+      <div class="dcap"><span>${TIER_NAME[sk.tier]} ${sk.kind} · demonstration</span></div>
       <canvas class="demo" data-sk="${sk.id}"></canvas>
       <div class="fams">${famChips(sk.id)}</div>
       <div class="kv"><span>⬤ ${COST[sk.tier]} gold</span><span>${sk.cd}s cooldown</span>

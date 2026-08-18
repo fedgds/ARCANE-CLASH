@@ -13,7 +13,12 @@
       "Bash(grep -nE '^[A-Za-z_$\\(]')",
       "Bash(awk '{printf \"%-20s %8s\\\\n\", $9, $5}')",
       "Bash(grep -rn '\\\\$\\\\$ *=' core.js index.html)",
-      "Bash(grep -n \"const \\\\$\\\\|const \\\\$\\\\$\" core.js)"
+      "Bash(grep -n \"const \\\\$\\\\|const \\\\$\\\\$\" core.js)",
+      "Bash(node -e ' *)",
+      "Bash(node /tmp/probe.js core.js)",
+      "Bash(node \"D:/tmp/probe.js\" core.js)",
+      "Bash(node \"D:/tmp/icon-probe.js\")",
+      "Bash(node /d/tmp/pairs.js)"
     ]
   }
 }
