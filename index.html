@@ -222,6 +222,9 @@ h1 span{
 .meter .bar i{display:block; height:100%; border-radius:99px;
   background:linear-gradient(90deg,#5fd0ff,#a97bff); transition:width .4s ease}
 .meter.gold .bar i{background:linear-gradient(90deg,#ffce5a,#ff9f6a)}
+/* the fusion meter borrows the fuse panel's violet so the two read as one
+   system across two screens */
+.meter.fz .bar i{background:linear-gradient(90deg,#6b4bbd,#c9a6ff)}
 
 /* ---------- ascension picker (delve) ---------- */
 #ascGrid{display:grid; grid-template-columns:repeat(auto-fill,minmax(232px,1fr));
@@ -451,6 +454,39 @@ h1 span{
   border:1px solid; font-size:10px; background:#0a0e1c99}
 .cbar b{font-size:11px; letter-spacing:.03em}
 .cbar span{color:#8b96bb; font-size:9.5px}
+
+/* ── fusion ──
+   The fuse panel is a peer of the combo bar, not part of the shop: what it
+   offers is made out of cards you already own, so it belongs above the
+   thing selling you new ones. Its own accent (--fzc, the fusion's colour)
+   rather than the shop's blue, because this is not a purchase. */
+#fuseBar{display:none; flex-direction:column; gap:8px;
+  padding:10px 12px; border-radius:11px;
+  border:1px solid #3a2f6d; background:linear-gradient(180deg,#150f2b99,#0a0e1c99)}
+.fzhead{display:flex; align-items:baseline; gap:9px; flex-wrap:wrap}
+.fzhead b{font:800 11px/1 var(--sans); letter-spacing:.09em;
+  text-transform:uppercase; color:#c9a6ff}
+.fzhint{font-size:9.5px; color:#8b96bb}
+.fzrow{display:grid; grid-template-columns:repeat(auto-fill,minmax(178px,1fr)); gap:9px}
+.card-f{border-color:var(--fzc); box-shadow:0 0 0 1px #ffffff08, 0 0 22px -14px var(--fzc)}
+.card-f:hover{border-color:var(--fzc); box-shadow:var(--pane-hi), 0 0 30px -10px var(--fzc)}
+/* what it eats and what that costs — the second is the one players miss */
+.fzeat{font:700 9.5px/1.3 var(--sans); letter-spacing:.04em; color:var(--fzc)}
+.fzlose{font:700 9.5px/1.3 var(--sans); letter-spacing:.05em; color:#ff8fae}
+.fzb{font:800 10px/1 var(--sans); letter-spacing:.09em; text-transform:uppercase;
+  padding:5px 10px; border-radius:6px; cursor:pointer; color:#0a0e1c;
+  border:1px solid var(--fzc); background:var(--fzc)}
+.fzb:hover{filter:brightness(1.15)}
+.fzb:focus-visible{outline:none; box-shadow:var(--focus)}
+/* a fused bench card and its grade chip */
+.own.fused{border-color:#6b4bbd66}
+.lvl.lfz{background:linear-gradient(90deg,#6b4bbd,#c9a6ff); color:#0a0e1c; font-weight:900}
+.card-s .tag .ttier.tfz{color:#c9a6ff; font-weight:800; flex:none}
+/* fused rows in the battle rail: a doubled inner edge plus a ✦ after the
+   name, so a fusion reads as special mid-fight without competing with
+   .cmb's combo glow — the two stack, since a fusion can still anchor one */
+.sk.fused{box-shadow:inset 0 0 0 1px var(--sc), inset 0 0 0 3px #0a0e1c}
+.sk.fused .sn{color:#e6e9ff}
 
 /* PvE reward: three cards, wider than a shop slot because there are only
    three of them and this is the only decision on the screen. */
@@ -849,31 +885,41 @@ th{color:var(--mute); font:600 9.5px/1 var(--sans); letter-spacing:.12em; text-t
 .cx .dcap{font:700 8.5px/1 var(--sans); letter-spacing:.12em; text-transform:uppercase;
   color:var(--mute); display:flex; justify-content:space-between; align-items:center}
 
-/* combo codex — scoped to #comboGrid so these column-card rules can never
-   leak onto the battle rail's .sk.cmb rows, which are horizontal */
-#comboGrid{display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:11px}
-#comboGrid .cmb{
+/* combo + fusion codex — scoped to .cxcol (which only the two codex column
+   grids carry) so these column-card rules can never leak onto the battle
+   rail's .sk.cmb rows, which are horizontal */
+#comboGrid,#fuseGrid{display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:11px}
+.cxcol .cmb{
   border:1px solid var(--line); border-radius:13px; padding:13px 14px;
   background:linear-gradient(180deg,#0c1120,#090d1b);
   display:flex; flex-direction:column; gap:9px; position:relative; overflow:hidden;
   box-shadow:var(--pane-hi);
 }
-#comboGrid .cmb::before{content:''; position:absolute; inset:0 auto 0 0; width:3px; background:var(--cc)}
-#comboGrid .cmb .ch{display:flex; align-items:baseline; gap:8px}
-#comboGrid .cmb .cn{font:750 13.5px/1.2 var(--sans); color:var(--cc)}
-#comboGrid .cmb .csize{font:700 8.5px/1 var(--sans); letter-spacing:.1em; text-transform:uppercase;
+.cxcol .cmb::before{content:''; position:absolute; inset:0 auto 0 0; width:3px; background:var(--cc)}
+.cxcol .cmb .ch{display:flex; align-items:baseline; gap:8px}
+.cxcol .cmb .cn{font:750 13.5px/1.2 var(--sans); color:var(--cc)}
+.cxcol .cmb .csize{font:700 8.5px/1 var(--sans); letter-spacing:.1em; text-transform:uppercase;
   color:#6a769c; border:1px solid #232d4e; border-radius:999px; padding:3px 7px}
-#comboGrid .cmb .recipe{display:flex; align-items:center; gap:6px; flex-wrap:wrap}
-#comboGrid .cmb .plus{color:#4b5578; font-weight:700}
-#comboGrid .cmb .eff{display:flex; flex-direction:column; gap:3px}
-#comboGrid .cmb .er{display:flex; gap:7px; font-size:11px; align-items:baseline}
-#comboGrid .cmb .ev{font-weight:750; color:#8fe0a8; min-width:52px}
-#comboGrid .cmb .en{color:#98a3c6}
-#comboGrid .cmb .who{font-size:10.5px; color:#6a769c; line-height:1.55}
-#comboGrid .cmb .who b{color:#93a0c8; font-weight:600}
-#comboGrid .cmb.live{box-shadow:var(--pane-hi), 0 0 0 1px var(--cc), 0 0 22px -5px var(--cc)}
-#comboGrid .cmb .livetag{font:700 8.5px/1 var(--sans); letter-spacing:.1em; text-transform:uppercase;
+.cxcol .cmb .recipe{display:flex; align-items:center; gap:6px; flex-wrap:wrap}
+.cxcol .cmb .plus{color:#4b5578; font-weight:700}
+.cxcol .cmb .eff{display:flex; flex-direction:column; gap:3px}
+.cxcol .cmb .er{display:flex; gap:7px; font-size:11px; align-items:baseline}
+.cxcol .cmb .ev{font-weight:750; color:#8fe0a8; min-width:52px}
+.cxcol .cmb .en{color:#98a3c6}
+.cxcol .cmb .who{font-size:10.5px; color:#6a769c; line-height:1.55}
+.cxcol .cmb .who b{color:#93a0c8; font-weight:600}
+.cxcol .cmb.live{box-shadow:var(--pane-hi), 0 0 0 1px var(--cc), 0 0 22px -5px var(--cc)}
+.cxcol .cmb .livetag{font:700 8.5px/1 var(--sans); letter-spacing:.1em; text-transform:uppercase;
   color:#0a0e1c; background:var(--cc); border-radius:999px; padding:3px 7px}
+/* a fusion card leads with its icon and carries a demo, so its header is a
+   row rather than a baseline-aligned line of text */
+#fuseGrid .cmb .ch{align-items:center}
+#fuseGrid .cmb .demo{width:100%; height:78px; display:block; border-radius:9px;
+  background:radial-gradient(120% 140% at 50% 100%,#101731,#080c18)}
+#fuseGrid .cmb table{width:100%; border-collapse:collapse; font-size:11px}
+#fuseGrid .cmb th{text-align:left; font-weight:600; color:#6a769c; padding:2px 0}
+#fuseGrid .cmb td{padding:2px 0; color:#c3cbe4; border-top:1px solid #16203a}
+#fuseGrid .cmb td:first-child{color:var(--cc); font-weight:750; width:44px}
 
 #detail .dclose{display:none}
 
@@ -1039,7 +1085,7 @@ th{color:var(--mute); font:600 9.5px/1 var(--sans); letter-spacing:.12em; text-t
   .dmg-rows{max-height:none}
 
   /* ---- codex / ascension ---- */
-  #codexGrid,#comboGrid,#ascGrid{grid-template-columns:1fr}
+  #codexGrid,#comboGrid,#fuseGrid,#ascGrid{grid-template-columns:1fr}
   #lab .panel.scroll,#asc .panel.scroll{overflow:visible}
   .tabs{gap:4px}
   .tab{padding:7px 11px}
@@ -1188,6 +1234,9 @@ th{color:var(--mute); font:600 9.5px/1 var(--sans); letter-spacing:.12em; text-t
       <button class="btn pri" id="bDone" data-sfx="none">End Turn</button>
     </div>
     <div id="comboBar"></div>
+    <!-- Fusions the bench can form. Hidden by renderFusePanel when there
+         are none, and absent entirely in the daily. -->
+    <div id="fuseBar"></div>
 
     <div class="split">
       <div style="display:flex;flex-direction:column;gap:12px;min-height:0">
@@ -1322,7 +1371,8 @@ th{color:var(--mute); font:600 9.5px/1 var(--sans); letter-spacing:.12em; text-t
     </div>
     <div class="panel grow scroll" style="margin-top:12px">
       <div id="codexGrid"></div>
-      <div id="comboGrid" style="display:none"></div>
+      <div id="comboGrid" class="cxcol" style="display:none"></div>
+      <div id="fuseGrid" class="cxcol" style="display:none"></div>
     </div>
   </section>
 

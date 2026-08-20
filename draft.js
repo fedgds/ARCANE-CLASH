@@ -84,6 +84,60 @@ function renderComboBar(combos){
       <b style="color:${col}">${c.name}</b><span>${c.txt}</span></div>`;
   }).join('');
 }
+/* ---- the fuse panel ----
+   Sits between the combo bar and the shop, so the reading order down the
+   screen is "what my build does now" → "what I could turn it into" → "what
+   is for sale". Hidden entirely when nothing is fusable, which is most of
+   round 1.
+
+   Every row states the cost as loudly as the payoff: which skills get
+   eaten, and a ▼ line naming any live combo the fusion would break. A
+   fusion that silently cost you Absolute Winter would be a trap — the shop
+   cards already set this precedent with their ▲ gains tell, and this is the
+   same idea pointed the other way. */
+function renderFusePanel(myBuild, liveCombos){
+  const el = $('#fuseBar');
+  if(!el) return;
+  const offers = canFuse() ? availableFusions(myBuild) : [];
+  if(!offers.length){ el.innerHTML=''; el.style.display='none'; return; }
+  /* explicit 'flex', not '': the stylesheet's own rule is display:none, so
+     clearing the inline value would re-hide the panel */
+  el.style.display = 'flex';
+  el.innerHTML = `<div class="fzhead"><b>Fusions available</b>
+    <span class="fzhint">the parents are consumed · the freed slot is yours</span></div>
+    <div class="fzrow"></div>`;
+  const row = el.querySelector('.fzrow');
+  for(const f of offers){
+    const sk = f.sk, ate = f.parents.map(p=>p.id);
+    /* what the bench becomes: parents gone, fusion in their place */
+    const after = myBuild.filter(b => ate.indexOf(b.id) < 0).concat([{id:sk.id, lvl:1}]);
+    const keptIds = new Set(activeCombos(after).map(c=>c.id));
+    const lost = liveCombos.filter(c => !keptIds.has(c.id));
+    const parentTxt = ate.map(id=>BY_ID[id].name).join(' + ');
+
+    const el2 = document.createElement('div');
+    el2.className = 'card-s card-f';
+    el2.dataset.sfx = 'none';
+    el2.style.setProperty('--fzc', sk.col);
+    el2.innerHTML = `
+      <div class="tierbar" style="background:${sk.col}"></div>
+      ${skillCardHead(sk, {size:28})}
+      <div class="fams">${famChips(sk.id)}</div>
+      <div class="desc">${sk.txt||''}</div>
+      <div class="fzeat">✦ eats ${parentTxt}</div>
+      ${lost.length?`<div class="fzlose">▼ ${lost.map(c=>c.name).join(' · ')}</div>`:''}
+      <div class="row"><span class="stats">${skillLine(sk,1)}</span>
+        <span class="grow"></span>
+        <button class="fzb" data-sfx="none">Fuse</button></div>`;
+    cardFocus(el2, `${skillIconLabel(sk)}. ${skillLine(sk,1)}. Consumes ${parentTxt}.`
+      + (lost.length?` Breaks ${lost.map(c=>c.name).join(', ')}.`:''),
+      ()=>showDetail(sk, 1));
+    el2.querySelector('.fzb').onclick = ev=>{ ev.stopPropagation(); fuse(ate); };
+    el2.onmouseenter = ()=>{ if(!TOUCH) showDetail(sk, 1); };
+    el2.onclick = ()=>showDetail(sk, 1, true);
+    row.append(el2);
+  }
+}
 /* shop odds shift toward high tiers in later rounds */
 const ODDS = [
   null,
@@ -236,6 +290,47 @@ function fuseFx(sk){
   flashMsg(`${sk.name} → Level up`);
   sfx.fuse();
 }
+/* ---- skill fusion -----------------------------------------------------
+   Distinct from the 3-copy level-up above, which stacks the SAME card. Here
+   two or three DIFFERENT owned skills are consumed and one greater skill
+   takes their place — see the FUSIONS block in core.js for how its numbers
+   are derived and why it is a pre-registered catalog entry.
+
+   Bench pressure is the price and the reward at once: distinct count drops
+   by one or two, which always fits under MAX_SKILLS, and the freed slot is
+   the real payoff on top of the FUSE_PREMIUM the numbers carry. */
+function canFuse(){ return !G.daily; }
+function fuse(ids, silent){
+  if(!canFuse()) return false;
+  const me = G.p[G.turn];
+  const parents = ids.map(id => me.own[id] && ({id, lvl:me.own[id].lvl})).filter(Boolean);
+  if(parents.length !== ids.length){ if(!silent) sfx.deny(); return false; }
+  const f = fusionFor(parents);
+  if(!f){ if(!silent) flashMsg('Those skills do not fuse', 'deny'); return false; }
+
+  /* Carry the parents' copies forward rather than returning them to the
+     pool. They are inside the fusion now; sell() hands them back. Gold
+     spent carries too, so the refund on a fusion equals the refund on the
+     cards that made it — fusing must not be a way to launder value. */
+  let spent = 0;
+  const from = [];
+  for(const p of parents){
+    const e = me.own[p.id];
+    spent += e.spent;
+    from.push({id:p.id, copies:e.count + 3*(e.lvl - 1)});
+    delete me.own[p.id];
+  }
+  me.own[f.sk.id] = {count:0, lvl:1, spent, fuseFrom:from};
+
+  if(!silent){
+    log(`Fused ${from.map(x=>BY_ID[x.id].name).join(' + ')} → `
+      + `<b style="color:${f.sk.col}">${f.sk.name} ✦${f.grade}</b>`);
+    flashMsg(`${f.sk.name} ✦${f.grade}`);
+    sfx.fuse();
+    renderDraft();
+  }
+  return true;
+}
 let msgTimer = 0;
 /* `kind` is optional and defaults to silent, because several callers already
    play their own sound and would otherwise double up. Passing 'deny' is what
@@ -273,9 +368,20 @@ function sell(id, silent){
   const me = G.p[G.turn], e = me.own[id];
   if(!e) return;
   me.gold += Math.max(1, e.spent - 1);
-  /* every copy ever put into this skill goes back to the shared pool */
-  const copies = e.count + 3*(e.lvl - 1);
-  for(let i=0;i<copies;i++) returnToPool(BY_ID[id]);
+  /* every copy ever put into this skill goes back to the shared pool.
+     A fused entry has no copies of its own — it was never in the shop —
+     so it returns the PARENTS' copies instead. Deriving them from
+     count + 3*(lvl-1) would hand back one copy of an id that has none in
+     the pool, quietly destroying contested cards the opponent could still
+     have drafted. The pool is the competitive substrate; it has to
+     balance. */
+  if(e.fuseFrom){
+    for(const p of e.fuseFrom)
+      for(let i=0;i<p.copies;i++) returnToPool(BY_ID[p.id]);
+  } else {
+    const copies = e.count + 3*(e.lvl - 1);
+    for(let i=0;i<copies;i++) returnToPool(BY_ID[id]);
+  }
   delete me.own[id];
   /* back(), not click(): buy rises and sell falls, so the pair tells you which
      direction gold just moved without looking at the counter */
@@ -384,7 +490,26 @@ function aiScore(cell, me){
   /* mild sustain preference — measured tier averages show it holds up */
   if(sk.fx==='heal' || sk.fx==='shield' || sk.fx==='dr') s += 4;
   s += counterScore(sk);
+  s += fuseScore(sk, me);
   return s + RNG.f()*5;                        // jitter so it isn't robotic
+}
+/* ---- fusion in the draft AI -------------------------------------------
+   Two hooks. This one prices a shop card that would OPEN a fusion; the
+   attempt itself lives in aiTakeTurn. Without both, the player fuses and
+   the AI never does, which quietly skews every duel — the same reason
+   counterdrafting exists.
+
+   Magnitude sits with counterScore's, near the ±5 jitter and under the
+   DPS_BUDGET baseline: enough to break a tie between comparable cards,
+   never enough to draft a bad one for the recipe. It leans on the grade,
+   because opening a grade-8 fusion is worth far more than a grade-1. */
+function fuseScore(sk, me){
+  if(!canFuse() || me.own[sk.id]) return 0;
+  const opened = availableFusions([...toBuild(me), {id:sk.id, lvl:1}])
+    .filter(f => f.parents.some(p => p.id === sk.id));
+  if(!opened.length) return 0;
+  const best = opened.reduce((a,b)=> b.grade > a.grade ? b : a);
+  return 6 + best.grade * 1.5;                 /* 7.5 at grade 1, 19.5 at 9 */
 }
 /* ---- counterdrafting --------------------------------------------------
    From round 2 the AI has seen a real build, so it should answer it. The
@@ -402,7 +527,10 @@ function counterScore(sk){
   for(const b of foe){
     const f = BY_ID[b.id];
     if(!f) continue;
-    const w = LVL_MUL[b.lvl];
+    /* A fusion never levels, so LVL_MUL would weigh a grade-9 the same as
+       a grade-1. Weigh it by how much budget it actually carries instead,
+       relative to a plain tier-5 slot. */
+    const w = f.fused ? FUSE_DPS[f.grade] / DPS_BUDGET[FUSE_TIER] : LVL_MUL[b.lvl];
     if(f.fx==='heal' || f.fx==='vamp' || f.fx==='shield' || f.fx==='undying') sustain += w;
     if(f.fx==='burn' || f.fx==='bleed') dot += w;
     if(f.fx==='stun' || f.fx==='root' || f.fx==='freeze' || f.fx==='silence'
@@ -445,12 +573,40 @@ function counterScore(sk){
 /* worth of a slot the AI already owns — what it gives up by selling */
 function aiHoldValue(id, e){
   const sk = BY_ID[id];
+  /* A fusion is priced by its GRADE, not its tier. Every fusion is
+     internally tier 5, so DPS_BUDGET alone would value a grade-9 the same
+     as a grade-1 and the sell-the-weakest-slot pivot below would cheerfully
+     sell the best card on the board. */
+  if(sk.fused) return FUSE_DPS[sk.grade];
   return DPS_BUDGET[sk.tier] * LVL_MUL[e.lvl] + e.count * 4;
 }
 function aiTakeTurn(side){
   const me = G.p[side];
   let guard = 0;
   while(guard++ < 60){
+    /* Fuse first, and before the affordability check — fusing costs no
+       gold, so a broke AI can still improve its board. The trade is priced
+       against what the parents are actually worth: the fusion's budget has
+       to clear their combined hold value, since fusing spends two or three
+       real cards to buy one.
+       With the board full the bar drops below zero, because there the freed
+       slot is the only way left to add anything at all — and aiScore fills
+       it on the very next pass. */
+    if(canFuse()){
+      const full = Object.keys(me.own).length >= MAX_SKILLS;
+      let pick = null, pickGain = full ? -8 : 0;
+      for(const f of availableFusions(toBuild(me))){
+        const cost = f.parents.reduce((s,p)=>s + aiHoldValue(p.id, me.own[p.id]), 0);
+        const gain = FUSE_DPS[f.grade] - cost;
+        if(gain > pickGain){ pickGain = gain; pick = f; }
+      }
+      if(pick){
+        const save = G.turn; G.turn = side;
+        fuse(pick.parents.map(p=>p.id), true);
+        G.turn = save;
+        continue;
+      }
+    }
     const affordable = G.shop
       .map((c,i)=>({c,i}))
       .filter(o=>!o.c.bought && COST[o.c.sk.tier] <= me.gold);
@@ -597,6 +753,7 @@ function renderDraft(){
     ? (G.series || G.round === ROUNDS ? 'Enter the Arena' : 'End Turn')
     : 'End Turn';
   renderComboBar(liveCombos);
+  renderFusePanel(myBuild, liveCombos);
 
   /* shop */
   const shop = $('#shop'); shop.innerHTML='';
@@ -657,24 +814,32 @@ function renderDraft(){
        a combo is lit, and names which combo it feeds */
     const inCombo = liveMembers.has(id);
     const mine = liveCombos.filter(c=>c.members.includes(id));
-    el.className = 'own' + (inCombo?' combo':'');
+    el.className = 'own' + (inCombo?' combo':'') + (sk.fused?' fused':'');
     if(inCombo) el.style.setProperty('--cg', comboCol(mine[0]));
-    const pips = e.lvl<3
+    /* A fused entry has no copies and no level to climb, so the 3-pip
+       progress row and "0/3 to next" would both be noise. It shows what it
+       ate instead — the one thing about it the icon cannot say. */
+    const pips = sk.fused ? ''
+      : e.lvl<3
       ? [0,1,2].map(i=>`<div class="pip ${i<e.count?'f':''}"></div>`).join('')
       : `<div class="pip f"></div>`;
+    const foot = sk.fused
+      ? `from ${e.fuseFrom.map(p=>BY_ID[p.id].name).join(' + ')}`
+      : e.lvl<3 ? `${e.count}/3 to next` : 'max level';
     el.innerHTML = `
       <div class="top">${skillIcon(sk,{size:22,detail:'card'})}
         <span class="nm" style="color:${sk.col}">${sk.name}</span>
         <span class="grow"></span>
-        <span class="lvl ${e.lvl===2?'l2':e.lvl===3?'l3':''}">LV ${e.lvl}</span></div>
+        <span class="lvl ${sk.fused?'lfz':e.lvl===2?'l2':e.lvl===3?'l3':''}">${
+          sk.fused?`✦${sk.grade}`:`LV ${e.lvl}`}</span></div>
       <div class="fams">${famChips(id)}</div>
-      <div class="pips">${pips}</div>
+      ${pips?`<div class="pips">${pips}</div>`:''}
       <div class="stats">${skillLine(sk,e.lvl)}</div>
       ${mine.length?`<div class="inc">◈ ${mine.map(c=>c.name).join(' · ')}</div>`:''}
-      <div class="row"><span class="stats" style="color:#6a769c">${e.lvl<3?`${e.count}/3 to next`:'max level'}</span>
+      <div class="row"><span class="stats" style="color:#6a769c">${foot}</span>
         <span class="grow"></span>
         <button class="sellb" data-sfx="none">Sell ⬤${sellValue(id)}</button></div>`;
-    cardFocus(el, `${skillIconLabel(sk)}. Level ${e.lvl}. ${skillLine(sk,e.lvl)}.`
+    cardFocus(el, `${skillIconLabel(sk)}. ${sk.fused?`Grade ${sk.grade}`:`Level ${e.lvl}`}. ${skillLine(sk,e.lvl)}.`
       + (mine.length?` Feeding ${mine.map(c=>c.name).join(', ')}.`:''),
       ()=>showDetail(sk, e.lvl));
     el.querySelector('.sellb').onclick = ev=>{ ev.stopPropagation(); sell(id); };
@@ -686,9 +851,13 @@ function renderDraft(){
 }
 
 function showDetail(sk, lvl, open){
-  const rows = [1,2,3].map(L=>{
+  /* A fusion has exactly one level — its grade was fixed by the parents it
+     consumed and it never climbs a curve — so the three-row level ladder
+     would print the same numbers three times. */
+  const lvls = sk.fused ? [1] : [1,2,3];
+  const rows = lvls.map(L=>{
     const d = dmgOf(sk,L);
-    return `<tr${L===lvl?' style="color:#fff"':''}><td>LV ${L}</td>
+    return `<tr${L===lvl?' style="color:#fff"':''}><td>${sk.fused?`✦${sk.grade}`:`LV ${L}`}</td>
       <td>${d?d+(sk.hits>1?'×'+sk.hits:''):'—'}</td>
       <td>${d?effDps(sk,L):'—'}</td>
       <td>${skillLine(sk,L).split(' · ').slice(d?1:0,-1).join(', ')||'—'}</td></tr>`;
@@ -699,13 +868,13 @@ function showDetail(sk, lvl, open){
       ${skillIcon(sk, {size:84, label:true})}
       <div class="dh">
         <div style="font-weight:750;font-size:14px;color:${sk.col}">${sk.name}</div>
-        <div class="stats">${TIER_NAME[sk.tier]} · ${sk.kind}${
+        <div class="stats">${skillTierWord(sk)} · ${sk.kind}${
           skillFxName(sk) ? ' · ' + skillFxName(sk) : ''} · ${sk.cd}s cooldown</div>
         <div class="fams">${famChips(sk.id)}</div>
       </div>
     </div>
     <p style="color:#98a3c6;font-size:11.5px;margin:0 0 10px">${sk.txt||''}</p>
-    <table><thead><tr><th>Lvl</th><th>Hit</th><th>DPS</th><th>Effect</th></tr></thead>
+    <table><thead><tr><th>${sk.fused?'Grade':'Lvl'}</th><th>Hit</th><th>DPS</th><th>Effect</th></tr></thead>
     <tbody>${rows}</tbody></table>
     <p class="stats" style="margin-top:10px;color:#6a769c">
       ${KIND_LORE[sk.kind]||''}${sk.fx&&FX_LORE[sk.fx]?' '+FX_LORE[sk.fx]:''}</p>`;
@@ -722,6 +891,7 @@ function showDetail(sk, lvl, open){
 function resetBattleFx(){
   fitCanvas();
   sdBanner = 0;
+  fzBanner = 0;
   floats=[]; rings=[]; ghosts=[]; slashes=[]; shards=[]; glyphs=[];
   for(const p of parts) p.live=false;
   shake=0; flashScr=0; elapsed=0; acc=0; endHold=0;

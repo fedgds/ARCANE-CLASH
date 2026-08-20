@@ -603,20 +603,32 @@ function activeCombos(build){
   const out = [], used = new Set();
   const ordered = [...COMBOS].sort((a,b)=>b.fam.length-a.fam.length);
   for(const c of ordered){
-    const claim = [];
-    let ok = true;
-    for(const need of c.fam){
-      const hit = items.find(it =>
-        !used.has(it.id) && !claim.includes(it.id) && it.tags.includes(need));
-      if(!hit){ ok = false; break; }
-      claim.push(hit.id);
-    }
-    if(ok){
+    const claim = claimFamilies(items, c.fam, used);
+    if(claim){
       out.push({...c, members:claim});
       for(const id of claim) used.add(id);
     }
   }
   return out;
+}
+/* Greedy non-reusing family claim, extracted so combos and FUSIONS share
+   one implementation of the "a skill anchors only one thing" rule rather
+   than drifting apart. Walks the required families in order and assigns
+   each a distinct item carrying it; returns the claimed ids, or null if
+   the set cannot be satisfied. `used` is optional and marks ids already
+   spent elsewhere.
+   Order matters: the caller decides what "first match" means by how it
+   sorts `items` — activeCombos leaves build order alone, availableFusions
+   sorts by budget so the greedy pick grabs the strongest parents. */
+function claimFamilies(items, fams, used){
+  const claim = [];
+  for(const need of fams){
+    const hit = items.find(it =>
+      (!used || !used.has(it.id)) && !claim.includes(it.id) && it.tags.includes(need));
+    if(!hit) return null;
+    claim.push(hit.id);
+  }
+  return claim;
 }
 /* Fold every active combo into one bonus object the sim reads. */
 function comboBonus(build){
@@ -630,12 +642,387 @@ function comboBonus(build){
   b.vfxOf = {};
   for(const c of list)
     for(const id of c.members) b.vfxOf[id] = Math.max(b.vfxOf[id]||1, c.vfx);
+  /* A fused skill carries its OWN vfx and does not need a combo to earn it:
+     it cost two or three slots, so it renders big unconditionally. Folding
+     it in here rather than in the renderer is what makes all eleven
+     behaviour renderers draw it larger for free — every one of them already
+     scales by combo.vfxOf[sk.id] (see drawActs in battle-render.js). */
+  for(const s of build){
+    const sk = BY_ID[s.id];
+    if(sk && sk.fused) b.vfxOf[s.id] = Math.max(b.vfxOf[s.id]||1, sk.vfx||1);
+  }
   return b;
 }
 
+
 const BY_ID = Object.fromEntries(SKILLS.map(s=>[s.id,s]));
 
+/* ── FUSIONS ────────────────────────────────────────────────────
+   Two or three DIFFERENT skills can be consumed to mint one greater
+   skill. This is not the 3-copy level-up in draft.js (same card, bigger
+   number) and not a COMBO (passive multipliers off skills you keep) —
+   the parents are spent, the bench shrinks, and something that was never
+   in the shop takes their slot.
+
+   A fused skill is a FROZEN, PRE-REGISTERED CATALOG ENTRY, fully
+   determined by two values: its archetype (which recipe) and its grade
+   (1-9, how strong the consumed parents were). Every instance is minted
+   into BY_ID and TAGS at load, which is the whole reason this feature is
+   cheap: Sim.cast, the battle rail, procedural icons, activeCombos,
+   identity(), skillLine, stats/credit and ghosts all resolve a fusion
+   through exactly the same paths as any other skill, untouched.
+
+   Fusions are deliberately NOT pushed into SKILLS. That array drives the
+   shop pool, tier odds, PvE mob builds and the Discovery denominator; a
+   fusion must be unbuyable and unrollable, so it stays out.
+
+   Fusions are always lvl 1 and never level up — parent levels are baked
+   into the grade at fuse time. That sidesteps the LVL_MUL
+   over/under-delivery problem and the cap-overflow note above entirely:
+   no fused skill ever climbs a level curve.
+
+   Recipes are keyed by FAMILY, not by skill id, so 22 recipes cover all
+   60 skills and every family has at least one route out. `kind` always
+   escalates past the parents' delivery (bolt+bolt becomes a beam, and
+   anything touching a field becomes a field), because the existing
+   renderers already draw fields and beams far larger than a bolt — the
+   power fantasy is free.
+
+   `vfx` is the visual-power multiplier, same field COMBOS uses, but
+   pitched at 1.75-2.2 — above the 1.7 that the very best triple combo
+   reaches. comboBonus() folds it in unconditionally, so a fusion renders
+   big without needing a combo to light it up.                        */
+const FUSE_TIER = 5;                     /* fixes DPS_BUDGET for back-solving */
+const FUSE_GRADES = 9;
+const FUSE_PREMIUM = {2:1.30, 3:1.45};
+const FUSE_DPS = [0, 26, 38, 52, 70, 92, 118, 150, 190, 240];  /* grade 1..9 */
+
+/* ── how a fusion's numbers are derived ─────────────────────────
+   Damage here is always derived from a power budget and never hand-typed,
+   and `role` coefficients for real skills are solved by the headless
+   paired-A/B harness. A fusion cannot go through that harness — it is not
+   a draftable card with an independent price, it only exists downstream of
+   whatever the player happened to spend. So its numbers come from the
+   parents' actual budget instead:
+
+     bud(sk,lvl) = DPS_BUDGET[sk.tier] * lvlMul(sk,lvl)
+     target      = Σ bud(parents) * FUSE_PREMIUM[parents.length]
+     grade       = the rung of FUSE_DPS NEAREST target      (clamped to 9)
+
+   FUSE_DPS is a BUDGET ladder, in the same units as target and
+   DPS_BUDGET — not a raw-dps ladder. Nearest rung rather than the rung
+   below, because the ladder steps by ~1.3x and flooring therefore ate
+   almost exactly the whole premium: two tier-3 parents targeting 68.9
+   floored to 52 and paid the player 0.98x what the parents had cost. See
+   fuseGrade below. Fixing tier 5 then makes
+   back-solving `role` one line, exactly the conversion every real skill
+   uses, with PURE_BONUS left to do its documented job on top:
+
+     role = FUSE_DPS[grade] / DPS_BUDGET[FUSE_TIER]      // i.e. / 44
+
+   so effDps lands on FUSE_DPS[grade] for a fusion carrying a rider and
+   1.24x that for one carrying none. Measured against the real catalog,
+   that is the right shape: across the 42 solved damage skills, effDps
+   per point of budget has a median of 0.87, and splits 1.12 for the
+   riderless ones against 0.69 for the ones carrying a rider. Deriving
+   role WITHOUT the /pure divisor would flatten that split to 1.0 and
+   quietly overtune every riderful fusion by ~1.6x against its riderless
+   siblings.
+
+   Sanity-checked per kind too, since fusions escalate delivery. Median
+   ratio for the kinds they actually use: field 0.99, rain 0.95, nova
+   0.90, multiproj 1.05, dash 0.86, orbit 1.17, beam 1.27. A fusion
+   sitting at ~1.0 is inside that band everywhere. Cone measured 2.24 but
+   on n=2 with a 0.70 floor, so Razor Gale is the one recipe whose raw dps
+   may read low against its peers — deliberately not fitted to two
+   samples.
+
+   effDps, skillLine, showDetail and identity() all report correct numbers
+   with no changes anywhere.
+
+   Grade 9 at 240 dps is a HARD CEILING. Two LV3 tier-5 parents solve to
+   ~380 raw, so the ladder caps them rather than minting something
+   unbounded — the top of the ladder is a plateau on purpose.
+
+   Utility fusions (role 0) spend the budget on `u` instead, seeded off
+   the Aegis Bulwark anchor: u = FUSE_DPS[grade] * SUSTAIN_COEF * cd.
+   Verified: Aegis is t3/cd11/u=383.4 and 26.5*1.35*11 = 393.5, within
+   seeding distance. The tier-1 sustain skills do NOT sit on that line
+   (Mend Wound is ~1.8x it) — they were solved individually, which is why
+   fuseBudget below prices a sustain parent off what it delivers rather
+   than off its tier. `uCoef` discounts a rider that carries value beyond
+   its raw magnitude (Barrier Wall's repulsion is worth ~0.70 of its
+   shield line).
+
+   Spot-checked by enumerating all 4038 legal (recipe × parents × level)
+   combinations and comparing the fusion's delivered value against its
+   parents' combined delivered value: median 1.32x, first quartile 1.16x,
+   5th percentile 0.84x. Both sides are measured in the SAME currency —
+   a riderless fusion's printed dps is divided back by PURE_BONUS, since
+   that 1.24x is the compensation for carrying no rider, not extra worth.
+   Measure it as raw dps instead and every pure recipe reads 1.24x better
+   than it is; the numbers above are the honest ones.
+
+   532 combinations (13%) come out below 1.0, and they are not spread
+   evenly — they are two specific, intended shapes:
+
+     - 497 of them sit AT the grade-9 ceiling, and 500 involve LV3 parents.
+       Below the ceiling the picture is 1.4% under parity, and three-parent
+       fusions below the ceiling never dip under 1.28x at all. So the tail
+       is the plateau doing its job. It also overstates the loss: three
+       skills on three cooldowns never realise the sum of their dps the way
+       one skill on one cooldown does, and this model credits the parents
+       as though they all fired continuously.
+
+     - the other 35 are every one of them Nowhereward, which delivers
+       exactly 0.70x its rung as raw shield BY CONSTRUCTION (uCoef above)
+       because the wall rider also pays out a repulsion field. The model
+       prices the shield and cannot see the repulsion — the same blind spot
+       fuseBudget documents for `role` further down, pointed the other way.
+
+   Utility fusions use only LINEAR-magnitude riders — heal, shield, wall,
+   summon. The percentage riders (dr, dmgAmp, crit, pact) are clamped in
+   the damage pipeline, so a big fused version would silently throw its
+   budget away exactly the way Frenzy LV3 does. Avoided by construction.
+
+   EVERY fusion is flagged est:true. FUSE_PREMIUM and FUSE_DPS are the two
+   knobs to re-measure once a harness can drive fusions; the values here
+   are seeded and spot-checked, not jointly fitted.                   */
+const FUSIONS = [
+  /* ── two parents ── */
+  {id:'thermallance', fam:['fire','frost'], name:'Thermal Lance',
+   kind:'beam', cd:5.0, hits:6, dur:0.7, fx:'shred', fxDur:5,
+   col:'#ffa8c8', vfx:1.8,
+   txt:'Steam and shrapnel in one lance. Strips whatever it touches.'},
+  {id:'fulgurite', fam:['storm','earth'], name:'Fulgurite',
+   kind:'rain', cd:6.0, hits:6, area:185, fx:'shred', fxDur:5,
+   col:'#d8dcb0', vfx:1.8,
+   txt:'Lightning fused to stone, then dropped from height.'},
+  {id:'sanguineedge', fam:['blood','blade'], name:'Sanguine Edge',
+   kind:'dash', cd:5.5, hits:6, fx:'vamp', u:0.45,
+   col:'#ff7d9e', vfx:1.8,
+   txt:'The blade drinks first and asks nothing after.'},
+  {id:'umbralcollapse', fam:['void','shadow'], name:'Umbral Collapse',
+   kind:'field', cd:7.0, hits:9, area:190, dur:5, fx:'pull',
+   col:'#a06bff', vfx:1.85,
+   txt:'A hole in the light that pulls the rest of it in.'},
+  {id:'solarverdict', fam:['holy','fire'], name:'Solar Verdict',
+   kind:'rain', cd:6.5, hits:7, area:200, fx:'burn', fxDur:5,
+   col:'#ffc46a', vfx:1.85,
+   txt:'Judgment delivered at the temperature of a star.'},
+  {id:'glaciertomb', fam:['frost','control'], name:'Glacier Tomb',
+   kind:'field', cd:8.0, hits:8, area:190, dur:5, fx:'freeze', fxDur:1.1,
+   col:'#bfe4ff', vfx:1.85,
+   txt:'The ground closes over them, one slow layer at a time.'},
+  {id:'razorgale', fam:['wind','blade'], name:'Razor Gale',
+   kind:'cone', cd:5.0, hits:7, spread:0.7, reach:340,
+   col:'#cdf6ff', vfx:1.75,
+   txt:'A wind with edges, and nowhere to stand out of it.'},
+  {id:'everward', fam:['life','guard'], name:'Everward',
+   kind:'self', cd:10.0, hits:1, fx:'shield', util:true,
+   col:'#a8f0d8', vfx:1.75,
+   txt:'A ward that mends as fast as it is spent.'},
+  {id:'voltaicrush', fam:['swift','storm'], name:'Voltaic Rush',
+   kind:'multiproj', cd:4.5, hits:5, spd:720,
+   col:'#aef2ff', vfx:1.75,
+   txt:'Five charges, released faster than they can be counted.'},
+  {id:'rotcrown', fam:['blight','blood'], name:'Rotcrown',
+   kind:'field', cd:7.0, hits:9, area:175, dur:5, fx:'bleed', fxDur:5,
+   col:'#c8e06a', vfx:1.8,
+   txt:'It crowns them, and then it eats.'},
+  {id:'nowhereward', fam:['veil','guard'], name:'Nowhere Ward',
+   kind:'self', cd:12.0, hits:1, fx:'wall', fxDur:6, util:true, uCoef:0.70,
+   col:'#dcefff', vfx:1.8,
+   txt:'A wall built out of not quite being here.'},
+  {id:'seraphhost', fam:['bind','holy'], name:'Seraph Host',
+   kind:'summon', cd:9.0, hits:1, fx:'summon', fxDur:10, count:2,
+   petName:'Seraph', util:'summon',
+   col:'#e0d0ff', vfx:1.85,
+   txt:'Two of them answer. Neither asks who started it.'},
+  {id:'manafold', fam:['arcane','arcane'], name:'Manafold',
+   kind:'multiproj', cd:5.0, hits:6, spd:660,
+   col:'#9ff4ff', vfx:1.75,
+   txt:'The same spell, folded over itself until it forgets to stop.'},
+  {id:'nullaperture', fam:['void','void'], name:'Null Aperture',
+   kind:'field', cd:8.0, hits:10, area:200, dur:5, fx:'pull',
+   col:'#c08cff', vfx:1.9,
+   txt:'An opening onto nothing. It is not a metaphor.'},
+  {id:'ironsentence', fam:['guard','control'], name:'Iron Sentence',
+   kind:'nova', cd:7.0, hits:2, reach:290, fx:'stun', fxDur:0.8,
+   col:'#ffd090', vfx:1.8,
+   txt:'The wall speaks once, and the argument is over.'},
+  {id:'magmavein', fam:['earth','fire'], name:'Magma Vein',
+   kind:'field', cd:7.0, hits:8, area:180, dur:5, fx:'burn', fxDur:4,
+   col:'#ff9a52', vfx:1.8,
+   txt:'The ground splits and something older comes up through it.'},
+
+  /* ── three parents ── the deep-commitment payoff, as with rime3/void3 */
+  {id:'cataclysm', fam:['fire','frost','storm'], name:'Cataclysm',
+   kind:'rain', cd:8.0, hits:9, area:235,
+   col:'#ffd0e8', vfx:2.1,
+   txt:'Fire, ice and charge arriving together, all disagreeing.'},
+  {id:'nullity', fam:['void','shadow','control'], name:'Nullity',
+   kind:'field', cd:9.0, hits:10, area:200, dur:6, fx:'silence', fxDur:1.4,
+   col:'#8f6bff', vfx:2.2,
+   txt:'Not darkness. The absence of the argument for light.'},
+  {id:'sanctuary', fam:['holy','life','guard'], name:'Sanctuary',
+   kind:'self', cd:11.0, hits:1, fx:'heal', util:true,
+   col:'#e8ffd8', vfx:2.0,
+   txt:'Ground that refuses, on principle, to let you die on it.'},
+  {id:'tenthousandwinds', fam:['blade','wind','shadow'], name:'Ten Thousand Winds',
+   kind:'dash', cd:8.0, hits:10, col:'#d8f0ff', vfx:2.1,
+   txt:'One step. Somewhere in it, ten thousand cuts.'},
+  {id:'vitaefamine', fam:['blood','blight','void'], name:'Vitae Famine',
+   kind:'field', cd:8.5, hits:10, area:190, dur:6, fx:'bleed', fxDur:5,
+   col:'#c86bd0', vfx:2.15,
+   txt:'A hunger with a radius. It does not fill.'},
+  {id:'phasetempest', fam:['arcane','storm','veil'], name:'Phase Tempest',
+   kind:'orbit', cd:9.0, hits:8, count:3, dur:7,
+   col:'#b0f0ff', vfx:2.0,
+   txt:'Three storms orbiting, each only intermittently real.'},
+];
+/* Deterministic id: display code branches on `fused`, and Discovery keys
+   on `fuseOf` (the archetype) rather than on the instance. */
+function fuseId(arch, grade){ return `fz_${arch}_${grade}`; }
+
+/* Mint one instance. `est:true` on every one — see the derivation note. */
+function mintFusion(rec, grade){
+  const dps = FUSE_DPS[grade];
+  const sk = Object.assign({}, rec, {
+    id: fuseId(rec.id, grade),
+    tier: FUSE_TIER,
+    fused: true, fuseOf: rec.id, grade: grade,
+    est: true,
+    /* budget -> role, the same conversion every solved skill uses.
+       PURE_BONUS then applies inside dmgOf, so a riderless fusion prints
+       1.24x the rung and a riderful one prints the rung itself.
+
+       That asymmetry is the point, not a leak. FUSE_DPS is a VALUE ladder
+       (fuseBudget sums prices, not printed damage), and in the solved
+       catalogue a pure skill already prints ~1.63x what a rider skill of
+       the same price prints — PURE_BONUS is one part of that spread and the
+       role solve carries the rest. Dividing PURE_BONUS back out here would
+       make a riderless fusion strictly worse value than a riderful one at
+       the same grade, which is the exact inequity PURE_BONUS exists to fix.
+       The Codex grade table therefore shows pure recipes above their rung;
+       so does the skill codex, for the same reason. */
+    role: rec.util ? 0 : dps / DPS_BUDGET[FUSE_TIER],
+    col: rec.col || TIER_COL[FUSE_TIER],
+  });
+  /* A summoned pet swings on BASIC_CD, so its per-hit damage is the target
+     dps stretched over that interval, split across the pets. Matches how
+     Wraith Call and Dire Wolves were solved (u=26 for one, u=23 for two). */
+  if(rec.util === 'summon') sk.u = dps * BASIC_CD / (rec.count || 1);
+  else if(rec.util)         sk.u = dps * SUSTAIN_COEF * rec.cd * (rec.uCoef || 1);
+  return sk;
+}
+/* Every archetype x grade, minted at load into BY_ID and TAGS.
+   FUSION_IDS is built archetype-sorted then grade-ascending so it is
+   stable as recipes are added later — pve-daily.js appends it to CODE_IDS
+   to keep every previously shared build code decoding byte-identically. */
+const FUSION_IDS = [];
+const FUSION_BY_ARCH = {};
+(function mintFusions(){
+  for(const rec of [...FUSIONS].sort((a,b)=> a.id < b.id ? -1 : 1)){
+    FUSION_BY_ARCH[rec.id] = rec;
+    /* Same-family recipes list a family twice; dedupe so the fusion reads
+       as ONE skill carrying that family — it can anchor one combo slot,
+       not two, and famChips draws one chip. */
+    const tags = [...new Set(rec.fam)];
+    for(let g = 1; g <= FUSE_GRADES; g++){
+      const sk = mintFusion(rec, g);
+      BY_ID[sk.id] = sk;
+      TAGS[sk.id]  = tags.slice();
+      FUSION_IDS.push(sk.id);
+    }
+  }
+})();
+
+/* What a bench slot was priced at, at its current level.
+
+   A damage parent contributes its PRICE, not its printed dps. `role` carries a
+   per-kind reliability discount -- a nova is only paid off when the enemy is
+   adjacent, a cone only when it is in front -- so Spark Ring prints twice the
+   dps its tier budget bought. Paying a fusion for that compensation would
+   double-count it: the fusion has its own delivery, and often a better one.
+
+   Linear sustain is the exception, and it needs one. A heal or a shield always
+   lands, so there is no discount hiding in its number, and the tier-1 ones
+   were solved well ABOVE the SUSTAIN_COEF line (Ward Plate returns 1.74x its
+   tier budget as shield, Mend Wound 1.83x). Priced at tier alone, Everward
+   would hand back less warding than it ate -- the one outcome a fusion must
+   never produce. So a sustain parent contributes the larger of the two. */
+const FUSE_LINEAR_FX = {heal:1, shield:1, wall:1};
+function fuseBudget(b){
+  const sk = BY_ID[b.id];
+  if(!sk) return 0;
+  const price = DPS_BUDGET[sk.tier] * lvlMul(sk, b.lvl);
+  if(!sk.role && FUSE_LINEAR_FX[sk.fx])
+    return Math.max(price, utilOf(sk, b.lvl) / (sk.cd * SUSTAIN_COEF));
+  return price;
+}
+/* Nearest rung, not the rung below.
+
+   Flooring looked safer and quietly ate the whole premium: the ladder steps by
+   about 1.3x, which is exactly FUSE_PREMIUM[2], so two tier-3 skills targeting
+   68.9 floored to the 52 rung and the "reward" for spending a slot came out at
+   0.98x what the parents cost. Rounding centres the quantisation error instead
+   of always spending it against the player -- the same 68.9 lands on 70, and
+   the premium survives. Ties go to the lower rung. */
+function fuseGrade(target){
+  let g = 1, best = Infinity;
+  for(let i = 1; i <= FUSE_GRADES; i++){
+    const d = Math.abs(FUSE_DPS[i] - target);
+    if(d < best){ best = d; g = i; }
+  }
+  return g;
+}
+/* Which recipe an exact set of parents satisfies, and at what grade.
+   Returns {rec, sk, grade, target, parents} or null. */
+function fusionFor(parents){
+  if(!parents || parents.length < 2 || parents.length > 3) return null;
+  /* A fusion is never itself a parent: the premium would compound and
+     there is no budget story for a fusion of fusions. */
+  if(parents.some(b => BY_ID[b.id] && BY_ID[b.id].fused)) return null;
+  const items = parents.map(b => ({id:b.id, lvl:b.lvl, tags:TAGS[b.id]||[]}));
+  if(new Set(items.map(it=>it.id)).size !== items.length) return null;
+  for(const rec of FUSIONS){
+    if(rec.fam.length !== items.length) continue;
+    const claim = claimFamilies(items, rec.fam);
+    if(!claim || claim.length !== items.length) continue;
+    const target = parents.reduce((s,b)=>s+fuseBudget(b), 0)
+                 * FUSE_PREMIUM[parents.length];
+    const grade  = fuseGrade(target);
+    return {rec, grade, target, sk:BY_ID[fuseId(rec.id, grade)],
+            parents:parents.map(b=>({id:b.id, lvl:b.lvl}))};
+  }
+  return null;
+}
+/* Every fusion the bench could form right now, best-first.
+   Recipes are NOT mutually exclusive here: the player performs one fusion
+   at a time and the list recomputes after, so offering each satisfiable
+   recipe independently is the honest presentation. Within a recipe the
+   parents are claimed strongest-first (items pre-sorted by budget) so the
+   offer is the highest grade that recipe can reach — that is the whole
+   point of the feature, and it keeps the panel to one row per recipe. */
+function availableFusions(build){
+  const pool = (build||[]).filter(b => BY_ID[b.id] && !BY_ID[b.id].fused);
+  const items = pool.map(b => ({id:b.id, lvl:b.lvl, tags:TAGS[b.id]||[]}))
+                    .sort((a,b)=> fuseBudget(b) - fuseBudget(a));
+  const out = [];
+  for(const rec of FUSIONS){
+    if(pool.length < rec.fam.length) continue;
+    const claim = claimFamilies(items, rec.fam);
+    if(!claim) continue;
+    const f = fusionFor(claim.map(id => pool.find(b=>b.id===id)));
+    if(f) out.push(f);
+  }
+  return out.sort((a,b)=> (b.rec.fam.length - a.rec.fam.length)
+                       || (b.grade - a.grade));
+}
+
 /* human-readable line for a card at a given level */
+
 function skillLine(sk, lvl){
   const d = dmgOf(sk,lvl), u = utilOf(sk,lvl);
   const bits = [];
@@ -665,6 +1052,10 @@ function skillLine(sk, lvl){
   if(sk.fx==='swap')   bits.push(`swap places`);
   if(sk.fx==='undying')bits.push(`survive at ${Math.round(u*100)}% hp`);
   if(sk.fx==='link')   bits.push(`bind foes ${sk.fxDur}s · ${Math.round(u*100)}% echo`);
+  /* Summons had no line at all, so every summon card read as nothing but a
+     cooldown. `u` is the pet's per-swing damage; it swings on BASIC_CD. */
+  if(sk.fx==='summon') bits.push(`${sk.count>1?`${sk.count}× `:''}${sk.petName||'ally'}`
+                                 + ` ${Math.round(u)} dmg · ${sk.fxDur}s`);
   /* chill/shred scale on RIDER_MUL, not utilOf — and were previously
      invisible on the card, so their upgrades looked like pure damage */
   if(sk.fx==='chill')  bits.push(`−${Math.round(CHILL_CD*riderMul(sk,lvl)*100)}% enemy speed`);

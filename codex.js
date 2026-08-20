@@ -48,7 +48,7 @@ const FX_LORE = {
   summon:'Calls an ally into the fight. It can be killed like anything else.',
 };
 let codexTier = 0;                      // 0 = all
-let codexView = 'skills';               // 'skills' | 'combos'
+let codexView = 'skills';               // 'skills' | 'combos' | 'fusions'
 
 /* ═══════════════════════════════════════════════════════════════
    SKILL PREVIEW — a tiny looping demonstration per skill.
@@ -488,10 +488,10 @@ const Preview = {
 };
 
 function renderCodex(){
-  /* view switch: skills vs combos */
+  /* view switch: skills vs combos vs fusions */
   const vt = $('#codexView');
   if(vt && !vt.children.length){
-    [['skills','Skills'],['combos','Combos']].forEach(([v,lab])=>{
+    [['skills','Skills'],['combos','Combos'],['fusions','Fusions']].forEach(([v,lab])=>{
       const b = document.createElement('button');
       b.className = 'tab' + (v===codexView?' on':'');
       b.textContent = lab; b.dataset.v = v;
@@ -557,11 +557,19 @@ function skillsInFamily(fam){
 }
 
 function paintCodex(){
-  const skillsOn = codexView === 'skills';
-  $('#codexGrid').style.display = skillsOn ? 'grid' : 'none';
-  $('#comboGrid').style.display = skillsOn ? 'none' : 'grid';
+  const view = codexView;
+  $('#codexGrid').style.display = view==='skills'  ? 'grid' : 'none';
+  $('#comboGrid').style.display = view==='combos'  ? 'grid' : 'none';
+  const fg = $('#fuseGrid');
+  if(fg) fg.style.display = view==='fusions' ? 'grid' : 'none';
+  /* The tier filter only means anything to the skill list; leaving the row
+     visible over the other two views offers six buttons that do nothing. */
+  const tr = $('#codexTabs');
+  if(tr && tr.parentElement) tr.parentElement.style.display = view==='skills' ? '' : 'none';
   Preview.reset();
-  if(skillsOn) paintSkills(); else paintCombos();
+  if(view==='skills')       paintSkills();
+  else if(view==='combos')  paintCombos();
+  else                      paintFusions();
   Preview.start();
 }
 
@@ -577,13 +585,17 @@ function paintCodex(){
    and this only runs on a click, long after boot. */
 function discBadge(kind, id){
   const L = Discovery.ledger();
-  const stamp = kind === 'skill' ? L.skills[id] : L.combos[id];
-  if(!stamp) return {cls:' undisc', tag:`<span class="disctag">Unfielded</span>`};
+  const bucket = kind === 'skill' ? L.skills : kind === 'fusion' ? L.fusions : L.combos;
+  const word = kind === 'skill' ? ['Unfielded','Fielded']
+             : kind === 'fusion' ? ['Unforged','Forged']
+             : ['Unfielded','Triggered'];
+  const stamp = bucket[id];
+  if(!stamp) return {cls:' undisc', tag:`<span class="disctag">${word[0]}</span>`};
   const fresh = stamp === Daily.dayKey();
   return {
     cls: '',
     tag: fresh ? `<span class="newtag">New</span>`
-               : `<span class="disctag seen">${kind==='skill'?'Fielded':'Triggered'}</span>`,
+               : `<span class="disctag seen">${word[1]}</span>`,
   };
 }
 
@@ -699,4 +711,102 @@ function paintCombos(){
   $('#labStat').textContent =
     `${COMBOS.length} combos · ${Discovery.comboCount()} triggered`
     + ` · one skill anchors only one combo at a time`;
+}
+
+/* ── fusion codex ──
+   The combo codex above answers "what do I hold together". This one answers
+   "what can I destroy two cards to make", which is a different question and
+   needs two things the combo cards do not: the grade ladder (the same recipe
+   is nine different skills depending on what you fed it) and a picture,
+   because the whole point of a fusion is that it does not look like its
+   parents. So each card carries a live demo of its grade-5 instance.
+
+   Keyed on the ARCHETYPE — one card per recipe, not per instance. Nine cards
+   for Thermal Lance would be nine copies of the same sentence. */
+function paintFusions(){
+  const own = new Set();
+  /* if a draft is in progress, mark the archetypes the human has already
+     forged — same courtesy the combo codex pays with `live` */
+  try{
+    if(G && G.p && G.p[0]) for(const b of toBuild(G.p[0])){
+      const sk = BY_ID[b.id];
+      if(sk && sk.fused) own.add(sk.fuseOf);
+    }
+  }catch(e){}
+
+  const groups = [
+    ['Two-skill fusions',   r=>r.fam.length===2],
+    ['Three-skill fusions', r=>r.fam.length===3],
+  ];
+  /* Floor, middle and ceiling. The full nine rows would be a wall of numbers
+     that all say the same thing; three make the slope legible. */
+  const SHOW = [1, 5, 9];
+
+  $('#fuseGrid').innerHTML = groups.map(([title, filt])=>{
+    const items = FUSIONS.filter(filt);
+    if(!items.length) return '';
+    const cards = items.map(rec=>{
+      const mid = BY_ID[fuseId(rec.id, 5)];
+      const need = {};
+      for(const f of rec.fam) need[f] = (need[f]||0)+1;
+      const recipe = Object.entries(need).map(([f,n])=>{
+        const fm = FAMILY[f];
+        return `<span class="fam" style="background:${fm.col}22;color:${fm.col};border-color:${fm.col}55">${
+          n>1?`${n}× `:''}${fm.name}</span>`;
+      }).join('<span class="plus">+</span>');
+      const sources = Object.keys(need).map(f=>{
+        const names = skillsInFamily(f).map(s=>s.name);
+        const shown = names.slice(0,5).join(', ');
+        const more = names.length>5 ? ` +${names.length-5} more` : '';
+        return `<div><b>${FAMILY[f].name}:</b> ${shown}${more}</div>`;
+      }).join('');
+      const rows = SHOW.map(g=>{
+        const sk = BY_ID[fuseId(rec.id, g)];
+        const d = dmgOf(sk, 1);
+        const eff = skillLine(sk,1).split(' · ').filter(s=>!/dmg$|cd$/.test(s)).join(', ');
+        return `<tr><td>✦${g}</td>
+          <td>${d? d+(sk.hits>1?'×'+sk.hits:'') : '—'}</td>
+          <td>${eff || '—'}</td></tr>`;
+      }).join('');
+      const bd = discBadge('fusion', rec.id);
+      return `<div class="cmb${own.has(rec.id)?' live':''}${bd.cls}" style="--cc:${rec.col}">
+        <div class="ch">${skillIcon(mid, {size:28})}
+          <span class="cn">${rec.name}</span>
+          <span class="csize">${rec.fam.length} skills</span>
+          <span class="grow"></span>
+          ${own.has(rec.id)?'<span class="livetag">Forged</span>':bd.tag}</div>
+        <div class="recipe">${recipe}</div>
+        <canvas class="demo" data-sk="${mid.id}"></canvas>
+        <div class="who" style="color:#93a0c8">${rec.txt||''}</div>
+        <div class="who">${KIND_LORE[rec.kind]||''}${
+          rec.fx&&FX_LORE[rec.fx]?' '+FX_LORE[rec.fx]:''}</div>
+        <div class="eff">
+          <div class="er"><span class="ev">${rec.cd}s</span>
+            <span class="en">Cooldown · ${rec.hits>1?rec.hits+' hits':'1 hit'}</span></div>
+          <div class="er"><span class="ev">×${(rec.vfx||1).toFixed(2)}</span>
+            <span class="en">Effect size — always, no combo needed</span></div>
+        </div>
+        <table><thead><tr><th>Grade</th><th>Per hit</th><th>Effect</th></tr></thead>
+        <tbody>${rows}</tbody></table>
+      </div>`;
+    }).join('');
+    return `<div style="grid-column:1/-1;margin:6px 0 2px">
+        <b style="font-size:12.5px">${title}</b>
+        <span class="stats" style="margin-left:8px">${items.length}</span>
+      </div>${cards}`;
+  }).join('');
+
+  /* same deal as the skill grid: size the backing store in CSS pixels and let
+     the IntersectionObserver keep the off-screen ones idle */
+  for(const cv of $$('#fuseGrid .demo')){
+    const sk = BY_ID[cv.dataset.sk];
+    if(!sk) continue;
+    const r = cv.getBoundingClientRect();
+    cv.width  = Math.max(1, Math.round(r.width || 280));
+    cv.height = 78;
+    Preview.add(cv, sk);
+  }
+  $('#labStat').textContent =
+    `${FUSIONS.length} fusions · ${Discovery.fusionCount()} forged`
+    + ` · the parents are consumed, and grade follows what you fed it`;
 }

@@ -66,6 +66,11 @@ function smoke(x,y,col,n){
 let floats=[], rings=[], ghosts=[], slashes=[], beams=[];
 let shake=0, flashScr=0, flashCol='#fff';
 let sdBanner=0;         // sudden-death announcement timer
+/* Fused-cast announcement. A fusion cost two or three draft slots, so when
+   one fires it gets the sudden-death treatment rather than the ordinary
+   cast flare: name on screen, screen flash, a real shake. */
+const FZ_BANNER = 1.5;
+let fzBanner=0, fzName='', fzCol='#fff', fzGrade=0;
 let shards=[], glyphs=[];
 
 /* ── CC visual vocabulary ──
@@ -254,6 +259,25 @@ const World = {
              coming from the burst around the caster before the act resolves */
           for(let i=0;i<12;i++){const a=rnd(TAU);
             efxSpark(d.sk, d.f.x, d.f.y-8, {ang:a, spd:rnd(160,50), life:rnd(.5,.2), r:rnd(3,1.2)});}
+          /* A FUSION announces itself. Three times the sparks (which
+             alternate element, so both halves of the recipe are visible in
+             the burst), a double expanding ring, a screen flash and a shake.
+             The banner is throttled by its own timer so a low-cooldown
+             fusion cannot strobe the screen. */
+          if(d.sk.fused){
+            for(let i=0;i<26;i++){const a=rnd(TAU);
+              efxSpark(d.sk, d.f.x, d.f.y-8,
+                {ang:a, spd:rnd(320,90), life:rnd(.8,.3), r:rnd(4.6,1.8), add:true});}
+            rings.push({x:d.f.x, y:d.f.y, r:10, vr:420, life:.42, max:.42, col:d.sk.col, w:5});
+            rings.push({x:d.f.x, y:d.f.y, r:10, vr:250, life:.55, max:.55, col:'#ffffff', w:2});
+            glow(d.f.x, d.f.y, 120, d.sk.col, 0.55);
+            shake = Math.min(26, shake + 9);
+            flashScr = Math.max(flashScr, 0.42); flashCol = d.sk.col;
+            if(fzBanner <= 0.4){
+              fzBanner = FZ_BANNER; fzName = d.sk.name;
+              fzCol = d.sk.col; fzGrade = d.sk.grade || 0;
+            }
+          }
         }
         break;
       case 'shieldHit':
@@ -2413,6 +2437,35 @@ function frame(now){
     ctx.fillText(`the arena claims ${Math.round(SD_FRAC*100)}% max hp every ${SD_PERIOD}s · healing falters`, VIEW.w/2, cy+30);
     ctx.restore();
   }
+
+  /* fused-cast announcement — same slam-in shape as sudden death, smaller
+     and higher up, and suppressed entirely while sudden death is on screen
+     so the two never fight for the same band. */
+  if(fzBanner>0){
+    fzBanner = Math.max(0, fzBanner - rdt);
+    if(sdBanner<=0){
+      const life = 1 - fzBanner/FZ_BANNER;
+      const rise = Math.min(1, life*8);
+      const fade = fzBanner<0.45 ? fzBanner/0.45 : 1;
+      const cy   = VIEW.h*0.155 + (1-rise)*22;
+      ctx.save();
+      ctx.globalAlpha = fade;
+      ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.globalCompositeOperation='lighter';
+      ctx.fillStyle=fzCol;
+      ctx.shadowColor=fzCol; ctx.shadowBlur=24;
+      ctx.font=`800 ${Math.round(VIEW.h*0.038)}px ui-sans-serif,system-ui,sans-serif`;
+      const jit = fzBanner>FZ_BANNER-0.2 ? rnd(-2,2) : 0;
+      ctx.fillText(fzName.toUpperCase(), VIEW.w/2 + jit, cy);
+      ctx.shadowBlur=0;
+      ctx.globalCompositeOperation='source-over';
+      ctx.globalAlpha = fade*0.75;
+      ctx.fillStyle='#e8ecff';
+      ctx.font=`700 ${Math.round(VIEW.h*0.017)}px ui-sans-serif,system-ui,sans-serif`;
+      ctx.fillText(`FUSED${fzGrade?' ✦'+fzGrade:''}`, VIEW.w/2, cy+22);
+      ctx.restore();
+    }
+  }
 }
 requestAnimationFrame(frame);
 
@@ -2600,13 +2653,17 @@ function buildRail(host, f){
   for(let i=0;i<f.build.length;i++){
     const b = f.build[i], sk = BY_ID[b.id];
     const el = document.createElement('div');
-    el.className = 'sk' + (inCombo.has(b.id) ? ' cmb' : '');
+    /* `fused` stacks with `cmb`: a fusion can still anchor a combo, and the
+       two markers read differently (double rim vs glowing border). */
+    el.className = 'sk' + (inCombo.has(b.id) ? ' cmb' : '') + (sk.fused ? ' fused' : '');
     el.style.setProperty('--sc', sk.col);
     if(inCombo.has(b.id)) el.style.setProperty('--cbc', inCombo.get(b.id));
     el.innerHTML = `<div class="swipe"></div><span class="dot"></span>`;
     const nm = document.createElement('span');
     nm.className = 'sn';
-    nm.textContent = sk.name + (b.lvl>1 ? ' ' + 'I'.repeat(b.lvl) : '');
+    /* fusions never level, so the level numeral slot shows the grade */
+    nm.textContent = sk.name + (sk.fused ? ' ✦' + sk.grade
+                                         : (b.lvl>1 ? ' ' + 'I'.repeat(b.lvl) : ''));
     nm.title = sk.name;
     const cd = document.createElement('span');
     cd.className = 'sd';

@@ -434,6 +434,39 @@ function sicoRim(tier){
        + ` stroke-dasharray="${(SICO_RIM * tier / 5).toFixed(1)} ${SICO_RIM}"`
        + ` stroke-opacity=".92"/>`;
 }
+/* ── the fused plate ──
+   A fusion has no tier worth showing. Internally every one is tier 5, so
+   the five-notch row would read "Legendary" for all 198 of them and say
+   nothing at all. Its number is its GRADE, 1–9, and nine notches is mud at
+   any size this plate reaches.
+
+   So the rim does the counting instead — grade ninths of an inset rim,
+   the same swept-length idea sicoRim already uses for tier — and a second
+   outer rim plus a ✦ mark say "fused". Three marks, none of them relying
+   on colour, and the grade also lands as a numeral at card size and up
+   because a swept arc is a quantity you compare, not one you read. */
+const SICO_RIM_IN = 195.40;               // perimeter of the 54×54 r12 inner rim
+function sicoFused(col, grade, detail){
+  const g = Math.max(1, Math.min(FUSE_GRADES, grade || 1));
+  let out = `<rect x="2.5" y="2.5" width="59" height="59" rx="14" fill="none"`
+          + ` stroke="${col}" stroke-width="1.5" stroke-opacity=".6"/>`
+          + `<rect x="5" y="5" width="54" height="54" rx="12" fill="none"`
+          + ` stroke="${col}" stroke-width="2.2" stroke-linecap="round"`
+          + ` stroke-dasharray="${(SICO_RIM_IN * g / FUSE_GRADES).toFixed(1)} ${SICO_RIM_IN}"`
+          + ` stroke-opacity=".95"/>`
+          /* ✦ top-right, diagonally opposite the rider badge so they never
+             collide and the pair frames the silhouette */
+          + `<path d="M50 7.4L51.7 12.1L56.4 13.8L51.7 15.5L50 20.2`
+          + `L48.3 15.5L43.6 13.8L48.3 12.1Z" fill="${col}" fill-opacity=".9"/>`;
+  if(detail !== 'micro')
+    out += `<circle cx="13.5" cy="50" r="9.6" fill="#070b14"/>`
+         + `<circle cx="13.5" cy="50" r="9.6" fill="${col}" fill-opacity=".16"/>`
+         + `<circle cx="13.5" cy="50" r="9.6" fill="none" stroke="${col}" stroke-width="1.3" stroke-opacity=".78"/>`
+         + `<text x="13.5" y="50" text-anchor="middle" dominant-baseline="central"`
+         + ` font-family="ui-sans-serif,system-ui,sans-serif" font-size="12" font-weight="800"`
+         + ` fill="${col}">${g}</text>`;
+  return out;
+}
 function sicoBadge(fx){
   const f = SICO_FX[fx];
   if(!f) return '';
@@ -483,8 +516,9 @@ function skillIcon(skill, opts){
     /* a held enemy is drawn smaller, inside the clamps */
     + (cc ? `<g transform="translate(32 32) scale(.76) translate(-32 -32)">${shape}</g>` + sicoCage(cc.col)
           : shape);
-  if(detail === 'micro') body += sicoRim(sk.tier) + sicoBadge(sk.fx);
-  else                   body += sicoTier(sk.tier) + sicoBadge(sk.fx);
+  if(sk.fused)                body += sicoFused(col, sk.grade, detail) + sicoBadge(sk.fx);
+  else if(detail === 'micro') body += sicoRim(sk.tier) + sicoBadge(sk.fx);
+  else                        body += sicoTier(sk.tier) + sicoBadge(sk.fx);
   if(detail === 'full')  body += sicoRunes(sk.id);
 
   /* Decorative by default: everywhere the game draws an icon it also
@@ -498,8 +532,11 @@ function skillIcon(skill, opts){
 
 /* Everything the drawing says, in words — the text half of "no
    information conveyed by colour alone". */
+/* What a plate's rank is called. A fusion's tier is a fixed 5 that means
+   nothing, so it names its grade instead — the number its rim is sweeping. */
+const skillTierWord = sk => sk.fused ? `Fused grade ${sk.grade}` : TIER_NAME[sk.tier];
 function skillIconLabel(sk){
-  const bits = [`${TIER_NAME[sk.tier]} ${SICO_KIND_WORD[sk.kind] || sk.kind}`];
+  const bits = [`${skillTierWord(sk)} ${SICO_KIND_WORD[sk.kind] || sk.kind}`];
   if(sk.fx && SICO_FX[sk.fx]) bits.push(SICO_FX[sk.fx].name);
   const fams = (TAGS[sk.id] || []).map(f => (FAMILY[f] || {}).name).filter(Boolean);
   if(fams.length) bits.push(fams.join(' and '));
@@ -520,9 +557,11 @@ const skillTagWord = sk => skillFxName(sk) || sk.kind;
    wants 121px of it; something has to go, and the tier is the one the
    plate can still say on its own (five notches, a count, not a hue).
    So the tight grids drop `.ttier`/`.tsep` in CSS and keep the rider,
-   which is the mark the picture draws smallest. Desktop keeps both. */
+   which is the mark the picture draws smallest. Desktop keeps both.
+   A fusion sets "✦4" there instead of a tier name: it is three characters
+   wide, so it survives the tight grids that drop the word entirely. */
 const skillTagText = (sk, extra) =>
-    `<span class="ttier">${TIER_NAME[sk.tier]}</span>`
+    `<span class="ttier${sk.fused?' tfz':''}">${sk.fused?'✦'+sk.grade:TIER_NAME[sk.tier]}</span>`
   /* nbsp, not plain spaces: the tag is a flex row so the separator is a
      flex item, and a flex item's leading and trailing spaces collapse
      away — "COMMON · NOVA" would set as "COMMON·NOVA". */

@@ -1350,16 +1350,74 @@ function elemOf(sk){
 }
 function efxOf(sk){ return EFX[elemOf(sk)] || EFX_DEFAULT; }
 
+/* ── dual-element sparks for fused skills ───────────────────────
+   Picking one element is right for a normal skill, but it throws away the
+   thing that makes a fusion look like a fusion. A Thermal Lance built from
+   fire and frost should visibly shed BOTH — fire licks that rise and trail
+   warm smoke, and frost shards that fall and glitter — rather than
+   resolving to whichever family wins ELEM_PRIORITY.
+
+   Only the per-particle spawn alternates. efxOf() stays single-element on
+   purpose: it also supplies `shape`, the projectile silhouette, which is
+   read every frame for the body — alternating that would make the
+   projectile flicker between a drop and a crystal. So the body reads as
+   the dominant element and the spray reads as all of them, which is the
+   right split anyway.
+
+   Same-family recipes (Manafold, Null Aperture) dedupe to one element and
+   fall straight through to the normal path.                          */
+const _elemsCache = {};
+function elemsOf(sk){
+  if(!sk || !sk.id) return [];
+  if(sk.id in _elemsCache) return _elemsCache[sk.id];
+  const tags = TAGS[sk.id] || [];
+  const els = ELEM_PRIORITY.filter(p => tags.indexOf(p) >= 0);
+  return (_elemsCache[sk.id] = els.length ? els : [elemOf(sk)].filter(Boolean));
+}
+/* Round-robin cursor per skill id. Deliberately a plain counter rather
+   than random: it guarantees an even split over any burst, so a two-spark
+   puff still shows both elements instead of rolling the same one twice. */
+const _elemTurn = {};
+function efxTurn(sk){
+  const els = elemsOf(sk);
+  if(els.length < 2) return efxOf(sk);
+  const i = (_elemTurn[sk.id] = ((_elemTurn[sk.id]||0) + 1) % els.length);
+  return EFX[els[i]] || EFX_DEFAULT;
+}
+/* Blend two hex colours. `t` 0 keeps a, 1 keeps b. */
+function efxMix(a, b, t){
+  const na = parseInt(a.slice(1),16), nb = parseInt(b.slice(1),16);
+  const c = (s) => Math.round((((na>>s)&255))*(1-t) + (((nb>>s)&255))*t);
+  return '#' + ((1<<24) + (c(16)<<16) + (c(8)<<8) + c(0)).toString(16).slice(1);
+}
+/* A fused spark leans its colour toward the family it is representing,
+   otherwise every particle would be the fusion's single identity colour
+   and the dual-element behaviour would be invisible. Kept partial so the
+   fusion still reads as one skill rather than two overlaid. */
+const _fuseColCache = {};
+function efxFuseCol(sk, el){
+  if(!el || !FAMILY[el]) return sk.col || '#fff';
+  const k = sk.id + '|' + el;
+  return _fuseColCache[k] ||
+    (_fuseColCache[k] = efxMix(sk.col || '#fff', FAMILY[el].col, 0.55));
+}
+
 /* Spawn one signature spark for a skill at (x,y).
    opt overrides: ang, spd, vx, vy, col, life, r, grav, drag, sh, rise, jit. */
 function efxSpark(sk, x, y, opt){
-  const e = efxOf(sk); opt = opt || {};
+  const e = sk && sk.fused ? efxTurn(sk) : efxOf(sk); opt = opt || {};
   const spd = opt.spd!=null ? opt.spd : rnd(120,40);
   const ang = opt.ang!=null ? opt.ang : rnd(TAU);
   const jit = e.jit * (opt.jit!=null?opt.jit:1);
   let vx = (opt.vx!=null?opt.vx:Math.cos(ang)*spd) + rnd(30,-30)*jit;
   let vy = (opt.vy!=null?opt.vy:Math.sin(ang)*spd) + e.rise*(opt.rise!=null?opt.rise:1) + rnd(20,-20)*jit;
-  return spawn({x, y, vx, vy, col:opt.col||sk.col||'#fff',
+  /* fused sparks tint toward whichever family this one is standing in for */
+  let col = opt.col;
+  if(!col && sk && sk.fused && e !== EFX_DEFAULT){
+    const els = elemsOf(sk);
+    if(els.length > 1) col = efxFuseCol(sk, els[_elemTurn[sk.id]||0]);
+  }
+  return spawn({x, y, vx, vy, col:col||sk.col||'#fff',
     life:opt.life!=null?opt.life:rnd(.6,.25), r:opt.r!=null?opt.r:rnd(3.4,1.2),
     grav:opt.grav!=null?opt.grav:e.grav, drag:opt.drag!=null?opt.drag:e.drag,
     sh:opt.sh||e.sh, rot:ang, spin:opt.spin||0, add:opt.add});

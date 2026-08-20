@@ -18,7 +18,10 @@
       "Bash(node /tmp/probe.js core.js)",
       "Bash(node \"D:/tmp/probe.js\" core.js)",
       "Bash(node \"D:/tmp/icon-probe.js\")",
-      "Bash(node /d/tmp/pairs.js)"
+      "Bash(node /d/tmp/pairs.js)",
+      "Bash(awk '/^const COMBOS = \\\\[/,/^\\\\];/' core.js)",
+      "Bash(awk '/^const ASCENSIONS = \\\\[/,/^\\\\];/' pve-daily.js)",
+      "Bash(grep -oE \",[1-5]$\")"
     ]
   }
 }

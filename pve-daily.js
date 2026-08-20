@@ -369,9 +369,27 @@ const Run = {
     const opening = this.build.length === 0;
     const fresh = SKILLS.filter(s => !owned.has(s.id) && band.includes(s.tier)
                                   && (!opening || s.role > 0));
-    const ups = this.build.filter(b => b.lvl < 3);
+    /* Fused skills are excluded: their parents' levels are already baked into
+       the grade, so there is no level 2 of a fusion to offer. */
+    const ups = this.build.filter(b => b.lvl < 3 && !BY_ID[b.id].fused);
     const picks = [];
-    const wantUps = full ? 3 : (ups.length ? 1 : 0);
+    /* One of the three slots can go to a fusion. Only ever ONE: two available
+       fusions almost always name overlapping parents, so taking one would
+       leave a stale card sitting on screen claiming skills you no longer own.
+       Not offered every time either — a fusable pair exists in most late
+       loadouts, and a permanent fuse card would quietly cut the new-skill
+       draw rate by a third for the rest of the run. At the cap it IS every
+       time, because there fusing is the only way to make room. */
+    const fz = availableFusions(this.build);
+    if(fz.length && (full || RNG.f() < 0.6)){
+      /* Drawn from the strongest few rather than uniformly: availableFusions
+         sorts best-first, and a flat draw over a long list would mostly offer
+         the smallest two-parent recipe the loadout happens to allow. */
+      const f = fz[RNG.int(Math.min(3, fz.length))];
+      picks.push({kind:'fuse', id:f.sk.id, lvl:1, arch:f.rec.id,
+                  grade:f.grade, parents:f.parents.map(p=>p.id)});
+    }
+    const wantUps = full ? 3 - picks.length : (ups.length ? 1 : 0);
     for(let i=0;i<wantUps && ups.length;i++){
       const b = ups.splice(RNG.int(ups.length),1)[0];
       picks.push({kind:'up', id:b.id, lvl:b.lvl+1});
@@ -396,6 +414,14 @@ const Run = {
     if(pick.kind === 'up'){
       const b = this.build.find(x => x.id === pick.id);
       if(b) b.lvl = pick.lvl;
+    } else if(pick.kind === 'fuse'){
+      /* The parents leave the loadout and the fusion takes their place. Filter
+         rather than splice-in-place so the survivors keep their acquisition
+         order, which is the order the battle rail reads left to right. The
+         fusion lands at the end, where a newly taken skill always lands. */
+      const eat = new Set(pick.parents);
+      this.build = this.build.filter(b => !eat.has(b.id));
+      this.build.push({id:pick.id, lvl:1});
     } else {
       this.build.push({id:pick.id, lvl:1});
     }
@@ -403,7 +429,7 @@ const Run = {
        skill, and a run that dies on the very next stage should still have
        credited the discovery. */
     Discovery.markBuild(this.build);
-    sfx.buy();
+    pick.kind === 'fuse' ? sfx.fuse() : sfx.buy();
     this.begin();
   },
 };
@@ -441,28 +467,43 @@ function renderOffer(headline, picks){
   const host = $('#offCards'); host.innerHTML = '';
   for(const p of picks){
     const sk = BY_ID[p.id];
-    const after = p.kind==='up'
-      ? Run.build
-      : [...Run.build, {id:p.id, lvl:1}];
+    const ate = p.kind==='fuse' ? p.parents.map(id=>BY_ID[id].name) : null;
+    const after = p.kind==='up'   ? Run.build
+                : p.kind==='fuse' ? Run.build.filter(b=>p.parents.indexOf(b.id)<0)
+                                            .concat([{id:p.id, lvl:1}])
+                :                   [...Run.build, {id:p.id, lvl:1}];
+    const keptIds = new Set(activeCombos(after).map(c=>c.id));
     const gained = activeCombos(after).filter(c=>!liveIds.has(c.id));
+    /* Only a fusion can LOSE you a combo — it is the one pick that removes
+       skills. Adding one never unseats an existing claim, so the other two
+       kinds skip the diff entirely. */
+    const lost = p.kind==='fuse'
+      ? activeCombos(Run.build).filter(c=>!keptIds.has(c.id)) : [];
     const el = document.createElement('div');
-    el.className = 'card-s' + (gained.length?' willcombo':'');
+    el.className = 'card-s' + (gained.length?' willcombo':'')
+                            + (p.kind==='fuse'?' card-f':'');
     el.dataset.sfx = 'none';         // Run.take sounds the acquire
+    if(p.kind==='fuse') el.style.setProperty('--fzc', sk.col);
     el.innerHTML = `
       <div class="tierbar" style="background:${sk.col}"></div>
       ${skillCardHead(sk, {size:40,
         nameExtra: p.kind==='up'?` <span class="lvl l2">→ LV ${p.lvl}</span>`:''})}
       <div class="fams">${famChips(sk.id)}</div>
       <div class="desc">${sk.txt||''}</div>
+      ${ate?`<div class="fzeat">✦ eats ${ate.join(' + ')}</div>`:''}
+      ${lost.length?`<div class="fzlose">▼ ${lost.map(c=>c.name).join(' · ')}</div>`:''}
       ${gained.length?`<div class="willc">▲ ${gained.map(c=>c.name).join(' · ')}</div>`:''}
       <div class="row"><span class="stats">${skillLine(sk, p.lvl)}</span>
         <span class="grow"></span>
-        <span class="cost" style="color:${p.kind==='up'?'#ffce5a':'#7fe0a0'}">${
-          p.kind==='up' ? 'UPGRADE' : 'NEW'}</span></div>`;
+        <span class="cost" style="color:${p.kind==='up'?'#ffce5a'
+                                        :p.kind==='fuse'?'#c9a6ff':'#7fe0a0'}">${
+          p.kind==='up' ? 'UPGRADE' : p.kind==='fuse' ? 'FUSE' : 'NEW'}</span></div>`;
     el.onclick = ()=>{ Preview.reset(); Run.take(p); };
-    cardFocus(el, `${skillIconLabel(sk)}. ${p.kind==='up'?`Upgrade to level ${p.lvl}`:'New skill'}.`
+    cardFocus(el, `${skillIconLabel(sk)}. ${p.kind==='up'?`Upgrade to level ${p.lvl}`
+                    :p.kind==='fuse'?`Fusion. Consumes ${ate.join(', ')}`:'New skill'}.`
       + ` ${skillLine(sk, p.lvl)}.`
-      + (gained.length?` Completes ${gained.map(c=>c.name).join(', ')}.`:''));
+      + (gained.length?` Completes ${gained.map(c=>c.name).join(', ')}.`:'')
+      + (lost.length?` Breaks ${lost.map(c=>c.name).join(', ')}.`:''));
     host.append(el);
   }
 
@@ -479,7 +520,9 @@ function renderOffer(headline, picks){
   const kit = Run.build.length
     ? Run.build.map(b=>{
         const s = BY_ID[b.id];
-        return `<b style="color:${s.col}">${s.name}${b.lvl>1?' '+'I'.repeat(b.lvl):''}</b>`;
+        /* a fusion never levels, so its numeral slot carries the grade */
+        return `<b style="color:${s.col}">${s.name}${
+          s.fused ? ' ✦'+s.grade : (b.lvl>1?' '+'I'.repeat(b.lvl):'')}</b>`;
       }).join(' · ')
     : '<i>nothing but a basic attack</i>';
   $('#offKit').innerHTML =
@@ -1003,8 +1046,9 @@ const Save = {
              so the codex can both gate content and say WHEN you found it.
              Kept as an object rather than an array because ids are the stable
              key here and a renamed skill should simply read as undiscovered
-             rather than shifting every later index. */
-          seen: {skills:{}, combos:{}},
+             rather than shifting every later index. `fusions` is keyed by
+             archetype rather than by fused instance id — see sawFusion(). */
+          seen: {skills:{}, combos:{}, fusions:{}},
           /* Delve ascension: which modifiers are switched on for the next
              run, and the best depth reached at each ascension LEVEL (number
              of active modifiers). Indexed by level so a 4-mod run to stage 20
@@ -1053,6 +1097,14 @@ const Save = {
           this.data.seen = {
             skills: pick(d.seen.skills, k => !!BY_ID[k]),
             combos: pick(d.seen.combos, k => COMBOS.some(c=>c.id===k)),
+            /* Validated against FUSIONS, not BY_ID: this bucket is keyed by
+               ARCHETYPE, so a fused instance id like `fz_thermallance_5` would
+               sail through a BY_ID check and then never match anything
+               fusionCount() asks about. Restoring it here is the whole reason
+               the meter survives a reload — the bucket is written by flush()
+               with everything else, and this object is rebuilt from scratch, so
+               a key omitted here is a key silently dropped every session. */
+            fusions: pick(d.seen.fusions, k => FUSIONS.some(f=>f.id===k)),
           };
         }
         /* Ascension. `on` is filtered to modifiers that still exist AND are
@@ -1294,12 +1346,20 @@ const Discovery = {
     if(!d.seen || typeof d.seen !== 'object') d.seen = {skills:{}, combos:{}};
     if(!d.seen.skills) d.seen.skills = {};
     if(!d.seen.combos) d.seen.combos = {};
+    /* Added with fusions; a save written before them simply has no bucket, so
+       it grows one on first read and every earlier save migrates for free. */
+    if(!d.seen.fusions) d.seen.fusions = {};
     return d.seen;
   },
   sawSkill(id){ return !!this.ledger().skills[id]; },
   sawCombo(id){ return !!this.ledger().combos[id]; },
+  /* Keyed by ARCHETYPE, not instance. Thermal Lance is one discovery whether
+     you forged it at grade 2 or grade 9 — recording all nine would make the
+     meter a measure of how many times you fused, not of what you have met. */
+  sawFusion(arch){ return !!this.ledger().fusions[arch]; },
   skillCount(){ return SKILLS.filter(s=>this.sawSkill(s.id)).length; },
   comboCount(){ return COMBOS.filter(c=>this.sawCombo(c.id)).length; },
+  fusionCount(){ return FUSIONS.filter(f=>this.sawFusion(f.id)).length; },
 
   /* Marks a whole loadout and every combo it forms. Returns the names of
      things discovered for the FIRST time, so the result screen can make a
@@ -1310,7 +1370,17 @@ const Discovery = {
     const L = this.ledger(), day = Daily.dayKey(), fresh = [];
     for(const b of build){
       const sk = BY_ID[b.id];
-      if(!sk || L.skills[b.id]) continue;
+      if(!sk) continue;
+      /* A fusion goes in its own bucket under its archetype and never into
+         skills: the skills meter counts the 60 draftable cards, and dropping
+         198 instance ids in there would only bloat the save. */
+      if(sk.fused){
+        if(L.fusions[sk.fuseOf]) continue;
+        L.fusions[sk.fuseOf] = day;
+        fresh.push({kind:'fusion', name:sk.name, col:sk.col});
+        continue;
+      }
+      if(L.skills[b.id]) continue;
       L.skills[b.id] = day;
       fresh.push({kind:'skill', name:sk.name, col:sk.col});
     }
@@ -1341,18 +1411,18 @@ const Discovery = {
     return `<br><span style="color:#a97bff">New to the Codex — ${list}${more}.</span>`;
   },
 
-  /* The title-screen panel: two meters and the delve ratchet. This is the
+  /* The title-screen panel: three meters and the delve ratchet. This is the
      "you are getting somewhere" surface, and it is the reason to reopen. */
   render(){
     const el = $('#progress');
     if(!el) return;
-    const sk = this.skillCount(), cb = this.comboCount();
+    const sk = this.skillCount(), cb = this.comboCount(), fz = this.fusionCount();
     const d = Save.data;
     const asc = d.asc || {on:[], best:{}};
     const lvl = ascLevel(asc.on);
     const deep = d.pveBest || 0;
-    const meter = (label, have, total, gold) =>
-      `<div class="meter${gold?' gold':''}">
+    const meter = (label, have, total, cls) =>
+      `<div class="meter${cls?' '+cls:''}">
          <div class="mlab"><span>${label}</span><b>${have} / ${total}</b></div>
          <div class="bar"><i style="width:${total? (have/total*100).toFixed(1):0}%"></i></div>
        </div>`;
@@ -1366,7 +1436,8 @@ const Discovery = {
       `<div class="ptop"><span class="plabel">Discovery</span>
          <span class="pasc">${ascLine}</span></div>
        ${meter('Skills fielded', sk, SKILLS.length)}
-       ${meter('Combos triggered', cb, COMBOS.length, true)}`;
+       ${meter('Combos triggered', cb, COMBOS.length, 'gold')}
+       ${meter('Fusions forged', fz, FUSIONS.length, 'fz')}`;
   },
 };
 
@@ -1392,8 +1463,22 @@ const Discovery = {
    half-decoded build would be a different opponent than the sender saw.
    ═══════════════════════════════════════════════════════════════ */
 const CODE_VER = 'AC1';
-/* Stable id order. Computed once; SKILLS is frozen at load. */
-const CODE_IDS = SKILLS.map(s=>s.id).sort();
+/* Stable id order. Computed once; SKILLS is frozen at load.
+   Fusion ids are APPENDED after the sorted base list rather than sorted in
+   with it. That is the whole reason CODE_VER stays AC1: every index a
+   previously shared code refers to still points at the same skill, so every
+   code anyone has ever posted still decodes byte-identically. Sorting the
+   fusions in would have shifted every alphabetically-later id and silently
+   reinterpreted the entire history of shared codes.
+   FUSION_IDS is itself deterministic (archetype-sorted, grade ascending),
+   so codes stay valid as new recipes are added — a new archetype only ever
+   appends. Indices past 36 already use the two-char form below.
+
+   Regression anchor, minted with the id table as it stood BEFORE fusions
+   existed. If a change ever reorders the base list, this is the one-line
+   check that catches it — decodeBuild('AC1-00220g111k3-8') must return
+   arcbolt LV2 + Ember Dart LV1 + Ward Plate LV3, champion `reversal`. */
+const CODE_IDS = [...SKILLS.map(s=>s.id).sort(), ...FUSION_IDS];
 const CODE_IX = {};
 CODE_IDS.forEach((id,i)=>{ CODE_IX[id] = i; });
 const B36 = n => n.toString(36);
