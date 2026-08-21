@@ -892,7 +892,7 @@ function resetBattleFx(){
   fitCanvas();
   sdBanner = 0;
   fzBanner = 0;
-  floats=[]; rings=[]; ghosts=[]; slashes=[]; shards=[]; glyphs=[];
+  floats=[]; rings=[]; ghosts=[]; slashes=[]; shards=[]; glyphs=[]; rites=[]; stamps=[];
   for(const p of parts) p.live=false;
   shake=0; flashScr=0; elapsed=0; acc=0; endHold=0;
   Time.scale=1; Time.target=1; Time.slowLeft=0; Time.cooldown=0;

@@ -66,12 +66,48 @@ function smoke(x,y,col,n){
 let floats=[], rings=[], ghosts=[], slashes=[], beams=[];
 let shake=0, flashScr=0, flashCol='#fff';
 let sdBanner=0;         // sudden-death announcement timer
-/* Fused-cast announcement. A fusion cost two or three draft slots, so when
-   one fires it gets the sudden-death treatment rather than the ordinary
-   cast flare: name on screen, screen flash, a real shake. */
-const FZ_BANNER = 1.5;
+/* ── the fused cast: a whole cinematic, not a bigger cast flare ──
+   A fusion cost two or three draft slots and cannot be bought, rolled or
+   levelled. It fires maybe five times in a battle. So it does not share the
+   ordinary cast vocabulary at all — it gets its own staged sequence, and
+   every stage is doing a different job:
+
+     IMPLOSION  motes rip INWARD off a wide ring. Nothing else in the game
+                converges on the caster, so this alone says "something is
+                being gathered" before a single pixel of damage lands. It
+                also buys the wind-up read without delaying the sim, which
+                already resolved the cast the frame this fires.
+     DETONATION white core, three staggered shockwaves, a spoke star, and a
+                time punch. The punch is the single biggest lever: the world
+                briefly stops, which is how the player FEELS tier rather
+                than reading it.
+     THE RITE   a dual counter-rotating sigil on the floor with one arc per
+                parent family and one pip per grade. This is the part that
+                is unmistakably a fusion: the recipe is drawn, at size, in
+                the arena.
+     COLUMN     a light shaft up through the caster. Vertical is the one
+                axis the arena never uses, so it cuts through everything.
+     BANNER     the name, wiped in over a slab, split into its two family
+                colours, with the recipe spelled out underneath.
+
+   Everything is throttled by fzBanner so a low-cooldown fusion cannot
+   strobe, and the whole rite is suppressed while headless. */
+const FZ_BANNER = 1.9;
 let fzBanner=0, fzName='', fzCol='#fff', fzGrade=0;
-let shards=[], glyphs=[];
+let fzColA='#fff', fzColB='#fff', fzRecipe='', fzKind='';
+let shards=[], glyphs=[], rites=[];
+/* Floor seals a fused EFFECT stamps down (wards, orbit apparatus). Separate
+   from `rites`, which is the cast cinematic and carries a whole staged
+   timeline — a stamp is just a sigil on the ground with a lifetime. */
+let stamps=[];
+
+/* Easings the rite leans on. Local and prefixed so they cannot collide with
+   anything the art files export. */
+const fzOut  = p => 1 - Math.pow(1-p, 3);
+const fzIn   = p => p*p;
+/* overshoot: the sigil snaps past its radius then settles, which is what
+   makes it land like a stamp instead of growing like a bubble */
+const fzBack = p => { const c=2.2, q=p-1; return 1 + q*q*((c+1)*q + c); };
 
 /* ── CC visual vocabulary ──
    Each kind needs to be legible in a half-second glance, so they differ on
@@ -102,6 +138,24 @@ const Time = {
     shake = Math.max(shake, 15);
     $('#slowtag').style.opacity = '1';
     return true;
+  },
+  /* A fused cast's time hitch. Deliberately NOT slowmo():
+       · ungated — slowmo() is rate-limited against the crit stream, and a
+         fusion that landed inside a crit's 2.6s shadow would silently lose
+         the one beat that sells it;
+       · shorter and shallower — 0.3s at 0.18 scale reads as a PUNCH, where
+         slowmo's 1.5s at 0.06 reads as an action replay. The fusion should
+         hit like a downbeat, not stop the fight;
+       · no #slowtag — the banner is already naming what happened, and two
+         labels at once is noise.
+     It still nudges slowmo's cooldown so a crit landing in the same frame
+     cannot stack a second, deeper stretch on top of this one. */
+  punch(x,y){
+    this.slowLeft = Math.max(this.slowLeft, 0.72);   // 0.3s hold, then ease
+    this.scale = Math.min(this.scale, 0.05); this.target = 0.18;
+    this.zTarget = 1.3; this.focus.x = x; this.focus.y = y;
+    this.aberr = 1; this.lines = 1;
+    this.cooldown = Math.max(this.cooldown, 1.1);
   },
   update(rdt){                    // rdt = REAL delta, unscaled
     this.cooldown = Math.max(0, this.cooldown-rdt);
@@ -199,20 +253,34 @@ const World = {
            debris flies with that element's shape and motion, so a fire hit
            throws rising embers and a frost hit sheds falling shards. */
         const e = d.el ? (EFX[d.el] || EFX_DEFAULT) : null;
-        if(!e){ burst(d.x,d.y,d.col,d.n,d.pow); break; }
-        glow(d.x,d.y,(10+d.n*0.6)*e.glow,d.col,0.6);
-        for(let i=0;i<d.n;i++){ const aa=rnd(TAU), sp=rnd(220,40)*d.pow;
-          spawn({x:d.x, y:d.y, vx:Math.cos(aa)*sp, vy:Math.sin(aa)*sp+e.rise*0.4,
-            col:i%4? d.col : e.core, life:rnd(.55,.2), r:rnd(3.6,1.2)*d.pow,
-            grav:e.grav, drag:e.drag, sh:e.sh, rot:aa, spin:rnd(6,-6)}); }
+        if(!e) burst(d.x,d.y,d.col,d.n,d.pow);
+        else {
+          glow(d.x,d.y,(10+d.n*0.6)*e.glow,d.col,0.6);
+          for(let i=0;i<d.n;i++){ const aa=rnd(TAU), sp=rnd(220,40)*d.pow;
+            spawn({x:d.x, y:d.y, vx:Math.cos(aa)*sp, vy:Math.sin(aa)*sp+e.rise*0.4,
+              col:i%4? d.col : e.core, life:rnd(.55,.2), r:rnd(3.6,1.2)*d.pow,
+              grav:e.grav, drag:e.drag, sh:e.sh, rot:aa, spin:rnd(6,-6)}); }
+        }
+        /* A fusion's contact reads as a fusion. Damped to 0.62 because a
+           multi-target nova or an 8-tick field fires this once per victim per
+           tick — at full strength the pool would thin out mid-battle. */
+        if(d.sk && d.sk.fused) fzImpact(d.x, d.y, d.sk, d.pow*0.62);
         break;
       }
-      case 'shock':
+      case 'shock': {
         rings.push({x:d.x,y:d.y,r:8,vr:d.r*3.4,life:.42,max:.42,col:d.col,w:7});
         /* ground scorch/frost-bloom under a landed rain strike, tinted by the
            element's smoke colour when it has one */
         smoke(d.x,d.y,(d.el && (EFX[d.el]||{}).smoke) || d.col,5);
+        /* A fused strike cracks the floor in both parent colours. Rings only,
+           no particles — the `burst` that lands alongside this brings those. */
+        if(d.sk && d.sk.fused){
+          const ink = fzInk(d.sk);
+          rings.push({x:d.x,y:d.y,r:10,vr:d.r*4.6,life:.50,max:.50,col:ink.b,w:11,sq:0.34});
+          rings.push({x:d.x,y:d.y,r:6, vr:d.r*2.1,life:.68,max:.68,col:ink.a,w:5, sq:0.34});
+        }
         shake=Math.min(26,shake+5); break;
+      }
       case 'slash': {
         slashes.push({x:d.x,y:d.y,ang:d.ang,life:.26,max:.26,col:d.col,len:rnd(150,90)});
         /* the strike sheds its element on contact — a fire dash leaves embers
@@ -221,6 +289,15 @@ const World = {
         for(let i=0;i<8;i++){ const aa=rnd(TAU);
           spawn({x:d.x, y:d.y, vx:Math.cos(aa)*rnd(200,60), vy:Math.sin(aa)*rnd(180,50)+e.rise*0.5,
             col:d.col, life:rnd(.4,.18), r:rnd(3.4,1.2), grav:e.grav, drag:e.drag, sh:e.sh, rot:aa}); }
+        /* a fused dash cuts twice — the second stroke crosses the first, one
+           blade per parent family, so Sanguine Edge and Ten Thousand Winds
+           land an X rather than a single line */
+        if(d.sk && d.sk.fused){
+          const ink = fzInk(d.sk);
+          slashes.push({x:d.x,y:d.y,ang:d.ang+1.05,life:.30,max:.30,col:ink.b,len:rnd(190,120)});
+          slashes.push({x:d.x,y:d.y,ang:d.ang-0.34,life:.22,max:.22,col:ink.hot,len:rnd(230,150)});
+          fzImpact(d.x, d.y, d.sk, 0.9);
+        }
         break;
       }
       case 'ghost': ghosts.push({x:d.x,y:d.y,life:.34,max:.34,side:d.side,col:d.col,el:d.el}); break;
@@ -247,6 +324,20 @@ const World = {
           efxSpark(d.sk, d.f.x+Math.cos(a)*70, d.f.y+Math.sin(a)*70,
             {vx:-Math.cos(a)*150, vy:-Math.sin(a)*150, life:.5, r:rnd(3.6,1.6), drag:.9, rise:0.3});}
         glow(d.f.x,d.f.y,60*e.glow,d.sk.col,0.5);
+        /* a fused ward stamps its own seal on the floor and rises on a
+           two-tone collar — Sanctuary and Nowhere Ward should not share a
+           silhouette with a common shield */
+        if(d.sk.fused){
+          const ink = fzInk(d.sk);
+          stamps.push({ink, x:d.f.x, y:ARENA_H+18, rad:104, life:0.95, max:0.95});
+          rings.push({x:d.f.x, y:ARENA_H+18, r:20, vr:200, life:.55, max:.55,
+            col:ink.b, w:6, sq:0.30});
+          for(let i=0;i<Math.round(14*ink.k);i++){
+            const aa = rnd(TAU);
+            fzMote(d.sk, d.f.x+Math.cos(aa)*90, ARENA_H+18+Math.sin(aa)*28,
+              {vx:-Math.cos(aa)*60, vy:rnd(-120,-220), life:rnd(1,.5)});
+          }
+        }
         log(`${d.f.name} — <b style="color:${d.sk.col}">${d.sk.name}</b>`);
         break;
       }
@@ -259,25 +350,8 @@ const World = {
              coming from the burst around the caster before the act resolves */
           for(let i=0;i<12;i++){const a=rnd(TAU);
             efxSpark(d.sk, d.f.x, d.f.y-8, {ang:a, spd:rnd(160,50), life:rnd(.5,.2), r:rnd(3,1.2)});}
-          /* A FUSION announces itself. Three times the sparks (which
-             alternate element, so both halves of the recipe are visible in
-             the burst), a double expanding ring, a screen flash and a shake.
-             The banner is throttled by its own timer so a low-cooldown
-             fusion cannot strobe the screen. */
-          if(d.sk.fused){
-            for(let i=0;i<26;i++){const a=rnd(TAU);
-              efxSpark(d.sk, d.f.x, d.f.y-8,
-                {ang:a, spd:rnd(320,90), life:rnd(.8,.3), r:rnd(4.6,1.8), add:true});}
-            rings.push({x:d.f.x, y:d.f.y, r:10, vr:420, life:.42, max:.42, col:d.sk.col, w:5});
-            rings.push({x:d.f.x, y:d.f.y, r:10, vr:250, life:.55, max:.55, col:'#ffffff', w:2});
-            glow(d.f.x, d.f.y, 120, d.sk.col, 0.55);
-            shake = Math.min(26, shake + 9);
-            flashScr = Math.max(flashScr, 0.42); flashCol = d.sk.col;
-            if(fzBanner <= 0.4){
-              fzBanner = FZ_BANNER; fzName = d.sk.name;
-              fzCol = d.sk.col; fzGrade = d.sk.grade || 0;
-            }
-          }
+          /* A FUSION does not use the cast vocabulary — see fuseCast(). */
+          if(d.sk.fused) fuseCast(d.sk, d.f);
         }
         break;
       case 'shieldHit':
@@ -509,6 +583,414 @@ function flareSkill(f, idx){
   el.classList.remove('fire');
   void el.offsetWidth;
   el.classList.add('fire');
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   THE FUSED CAST — the one moment in a battle that gets a cinematic
+
+   Called once per fused cast, from the `cast` event. Everything here is
+   fire-and-forget: it seeds particles, rings, a world-space rite and the
+   screen banner, then returns. Nothing polls it and the sim never waits.
+
+   Ordering below is the ordering on screen — implosion first because it is
+   the only gesture that has to be read BEFORE the bang to work.
+   ═══════════════════════════════════════════════════════════════ */
+const FZ_RITE = 1.3;
+
+/* The recipe drives the whole palette. elemsOf() returns every family the
+   fusion carries, priority-ordered; two colours is what the eye can track,
+   so the rest only feed the arcs on the sigil. Same-family recipes
+   (Manafold, Null Aperture) collapse to one element and fall back to the
+   skill colour for the second, which keeps them monochrome on purpose —
+   they ARE the single-element fusions.
+
+   Memoised by id: the cast rite needs this once, but the ACT renderers ask
+   for it every frame for the whole duration of a field, and elemsOf walks
+   the tag list each call. */
+/* Family colour, with the skill's own as the fallback. Module scope rather
+   than a local inside fzPal: fuseCast builds the rite's arcCols from it too,
+   and as a local it was a ReferenceError that killed every fused cast after
+   the detonation — taking the rite, column, halo and banner with it. */
+const fzFamCol = (e, sk) => (FAMILY[e] && FAMILY[e].col) || (sk && sk.col) || '#ffffff';
+
+const _fzPal = {};
+function fzPal(sk){
+  let p = _fzPal[sk.id];
+  if(p) return p;
+  const els  = (typeof elemsOf === 'function' ? elemsOf(sk) : []) || [];
+  const fcol = e => fzFamCol(e, sk);
+  p = _fzPal[sk.id] = {
+    a: els[0] ? fcol(els[0]) : (sk.col || '#ffffff'),
+    b: els[1] ? fcol(els[1]) : (sk.col || '#ffffff'),
+    n: Math.max(els.length, 1),
+    els
+  };
+  return p;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   THE SHARED FUSION FX LAYER
+
+   A fusion used to render as a common skill with wider strokes: sk.vfx
+   (1.75-2.2) is folded into the combo multiplier V in core.js, and that
+   was the whole of it. Bigger is not special, so these five helpers give
+   every fused act three things a common skill cannot have:
+
+     · BOTH PARENT COLOURS. fzPal already resolves the recipe's families
+       for the cast rite; reusing it here is what makes the effect and the
+       cast read as one object instead of two events that happen to share
+       a colour.
+     · GRADE. `k` below rises 0.55 -> 1.30 across ✦1..✦9 and multiplies
+       every count, density and alpha downstream, so a ✦9 out-classes a
+       ✦1 by volume rather than by a numeral on the rail.
+     · A HOT FILAMENT. The three-pass stroke (haze/body/core) that the
+       gravity well's spiral arms use is the single detail that separates
+       a drawn line from a thing made of energy. Lifted into fzPass so
+       every renderer gets it for one call.
+   ═══════════════════════════════════════════════════════════════ */
+
+/* Grade weight. Deliberately does NOT start at 0: a ✦1 fusion still cost
+   two draft slots, so the floor is 0.55 rather than nothing, and the top
+   is 1.30 rather than 9x — this scales DETAIL, not power. */
+const _fzInk = {};
+function fzInk(sk){
+  let k = _fzInk[sk.id];
+  if(k) return k;
+  const p = fzPal(sk), g = sk.grade || 1;
+  return (_fzInk[sk.id] = {
+    a: p.a, b: p.b, hot: '#ffffff', els: p.els,
+    grade: g,
+    k: 0.55 + (clamp(g,1,9) - 1)/8 * 0.75,
+    /* the recipe's own colour, kept separate from the family pair: some
+       passes want the authored blend rather than either parent */
+    col: sk.col || p.a,
+    mono: p.a === p.b,
+    /* `cA`/`cB`/`arcs`/`arcCols`/`grade` are exactly the fields fzSigil
+       reads off a rite, so an ink object can be handed straight to it —
+       the effect stamps the SAME seal the cast drew, at arena scale. */
+    cA: p.a, cB: p.b,
+    arcs: Math.max(1, Math.min(3, p.els.length)),
+    arcCols: (p.els.length ? p.els : [null]).slice(0,3)
+      .map(el => el ? fzFamCol(el, sk) : (sk.col || '#ffffff'))
+  });
+}
+
+/* Three passes over whatever path the caller just built: a wide haze in
+   the SECOND family colour, the body in the first, then a hot hairline.
+   The two-tone split is the point — a single-colour three-pass stroke is
+   just a glow, whereas haze in B under body in A reads as two elements
+   occupying the same line, which is what a fusion is.
+
+   Caller owns the path (beginPath through to the last lineTo); this only
+   strokes it, so a 24-segment spiral costs one path and three strokes
+   rather than three paths. */
+function fzPass(ink, A, w, V, hotBoost){
+  const hb = hotBoost || 0;
+  ctx.strokeStyle = ink.b;   ctx.globalAlpha = A*0.18; ctx.lineWidth = w*3.2*V; ctx.stroke();
+  ctx.strokeStyle = ink.a;   ctx.globalAlpha = A*0.62; ctx.lineWidth = w*V;     ctx.stroke();
+  ctx.strokeStyle = ink.hot; ctx.globalAlpha = A*(0.34+hb);
+  ctx.lineWidth = Math.max(0.8, w*0.30*V); ctx.stroke();
+}
+
+/* A fused mote. efxSpark already round-robins the parent elements per
+   particle for fused skills (see efxTurn in arena-art.js), so the spray
+   is dual-element for free — this only forces additive blending and lets
+   grade buy a little more life and size. */
+function fzMote(sk, x, y, opt){
+  opt = opt || {};
+  const k = fzInk(sk).k;
+  return efxSpark(sk, x, y, Object.assign({}, opt, {
+    add: true,
+    r:    (opt.r    != null ? opt.r    : rnd(3.6,1.4)) * (0.8 + k*0.35),
+    life: (opt.life != null ? opt.life : rnd(.6,.25))  * (0.85 + k*0.25)
+  }));
+}
+
+/* The moment of contact. Mirrors the crit treatment in World.on('hit') —
+   paired rings, a spike star, debris — but in the two parent colours and
+   on the GROUND PLANE, which is what stops it reading as a screen-space
+   decal stuck over the arena.
+
+   This exists because the acts that need it most vanish on impact: a
+   meteor, a dash slash and a projectile are all gone the frame they land,
+   so there is no act left for drawActs to embellish. */
+function fzImpact(x, y, sk, pow){
+  const ink = fzInk(sk);
+  const P = (pow || 1) * (0.75 + ink.k*0.45);
+  /* two fronts at different speeds so the blast has depth, squashed onto
+     the floor so it belongs to the arena rather than to the camera */
+  rings.push({x, y, r:8,  vr:560*P, life:.40, max:.40, col:ink.a,   w:9*P,  sq:0.42});
+  rings.push({x, y, r:6,  vr:300*P, life:.58, max:.58, col:ink.b,   w:5*P,  sq:0.42});
+  rings.push({x, y, r:10, vr:820*P, life:.26, max:.26, col:ink.hot, w:3.4*P});
+  /* spike star: arm count IS the grade, alternating the parent colours,
+     so the recipe and the tier are both legible in one frame */
+  const arms = 6 + Math.round(ink.k*6);
+  for(let s=0;s<arms;s++){
+    const aa = s*TAU/arms + rnd(.12,-.12);
+    spawn({x, y, vx:Math.cos(aa)*rnd(520,300)*P, vy:Math.sin(aa)*rnd(430,240)*P,
+      col: s%2 ? ink.a : ink.b, life:.26, r:2.8*P, drag:.8, sh:'streak', add:true});
+  }
+  for(let i=0;i<Math.round(10*ink.k)+6;i++)
+    fzMote(sk, x, y, {ang:rnd(TAU), spd:rnd(300,80)*P, life:rnd(.7,.28)});
+  glow(x, y, 42*P, ink.a, 0.5);
+}
+
+/* A small counter-rotating rune collar. The cast rite stamps a big sigil
+   on the floor; this is the same vocabulary shrunk down to travel WITH
+   the effect, so a fused projectile or orbiting body is visibly still
+   part of the rite that launched it. Kept deliberately tiny — it must
+   never compete with the body it is decorating. */
+function fzCollar(ink, x, y, rad, rot, A, squash){
+  const sq = squash == null ? 1 : squash;
+  ctx.save(); ctx.translate(x,y); ctx.scale(1, sq);
+  ctx.globalAlpha = A*0.5; ctx.strokeStyle = ink.b; ctx.lineWidth = 1.4;
+  ctx.beginPath(); ctx.arc(0,0,rad,0,TAU); ctx.stroke();
+  /* ticks, and one bright arc chasing the other way — counter-rotation is
+     what keeps it from reading as a rigid decal glued to the body */
+  const N = 8 + Math.round(ink.k*6);
+  ctx.globalAlpha = A*0.7; ctx.strokeStyle = ink.a; ctx.lineWidth = 1.8;
+  ctx.beginPath();
+  for(let i=0;i<N;i++){
+    const aa = rot + i*TAU/N, c = Math.cos(aa), s = Math.sin(aa);
+    ctx.moveTo(c*rad*0.94, s*rad*0.94); ctx.lineTo(c*rad*1.16, s*rad*1.16);
+  }
+  ctx.stroke();
+  ctx.globalAlpha = A*0.9; ctx.strokeStyle = ink.hot; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(0,0,rad*1.05, -rot*1.7, -rot*1.7 + 0.9); ctx.stroke();
+  ctx.restore(); ctx.globalAlpha = 1;
+}
+
+function fuseCast(sk, f){
+  const els = fzPal(sk).els;
+  const cA = fzPal(sk).a, cB = fzPal(sk).b;
+  const x = f.x, y = f.y - 8;
+  const grade = sk.grade || 1;
+
+  /* ── 1. IMPLOSION ──
+     Motes launched from a wide ring with an inward + tangential velocity, so
+     they spiral rather than fall straight in, and with drag disabled and
+     speed solved as radius/life they all ARRIVE together on the caster. That
+     synchronised arrival is what makes it read as a gathering instead of a
+     cloud; a spread of arrival times just looks like ordinary debris played
+     backwards. jit/rise are zeroed so the element's own drift cannot bend a
+     mote off its line — the spiral has to stay clean to be legible. */
+  for(let i=0;i<38;i++){
+    const a = rnd(TAU), rr = rnd(300,150);
+    const life = rnd(.40,.26), sp = rr/life, swirl = 0.36;
+    efxSpark(sk, x + Math.cos(a)*rr, y + Math.sin(a)*rr*0.8, {
+      vx: -Math.cos(a)*sp - Math.sin(a)*sp*swirl,
+      vy: -Math.sin(a)*sp*0.8 + Math.cos(a)*sp*swirl,
+      life, r:rnd(4.6,1.8), grav:0, drag:1, rise:0, jit:0, add:true});
+  }
+
+  /* ── 2. DETONATION ──
+     Three shockwaves at different speeds and widths so the front has depth,
+     then a spoke star whose arm count tracks GRADE — a ✦4 fusion throws a
+     visibly denser star than a ✦1, which is the only place grade is
+     communicated by the FX itself rather than by a numeral. Arms alternate
+     the two family colours, so the recipe is in the star too.
+
+     Note there is no glow() call here, deliberately. Events are emitted from
+     inside sim.step(), which frame() runs BEFORE it clears the canvas — so
+     anything drawn directly from a handler is painted over in the same frame
+     and never reaches the screen. Only state pushes survive from here. The
+     rite's core flash (drawRites) carries the bloom instead, from inside the
+     render pass where it actually shows. */
+  rings.push({x, y, r:6, vr:1180, life:.42, max:.42, col:'#ffffff', w:7});
+  rings.push({x, y, r:6, vr:780,  life:.60, max:.60, col:cA, w:15});
+  rings.push({x, y, r:6, vr:480,  life:.78, max:.78, col:cB, w:9});
+  const arms = 10 + grade*3;
+  for(let s=0;s<arms;s++){
+    const a = s*TAU/arms + rnd(.09,-.09);
+    spawn({x, y, vx:Math.cos(a)*rnd(920,640), vy:Math.sin(a)*rnd(780,540),
+      col: s%2 ? cA : cB, life:.32, r:3.4, drag:.8, sh:'streak', add:true});
+  }
+  burst(x, y, '#ffffff', 26, 2.6);
+  for(let i=0;i<32;i++){
+    const a = rnd(TAU);
+    efxSpark(sk, x, y, {ang:a, spd:rnd(440,120), life:rnd(.95,.35),
+      r:rnd(5,2), add:true});
+  }
+  smoke(x, y+16, '#241a3a', 8);
+
+  shake = Math.min(26, shake + 15);
+  flashScr = Math.max(flashScr, 0.7); flashCol = cA;
+  Time.punch(x, y);
+  if(sfx.fuseCast) sfx.fuseCast(sk, x);
+
+  /* ── 3. THE RITE + 4. THE COLUMN ──
+     One entry, drawn by drawRites(). Both live off a single lifetime so the
+     column collapsing and the sigil settling stay phase-locked. */
+  rites.push({x, y:f.y, cy:y, life:FZ_RITE, max:FZ_RITE,
+    col:sk.col, cA, cB, grade,
+    /* one arc per family, capped at 3 — the recipes never exceed it and an
+       uncapped loop would divide the ring into unreadable slivers */
+    arcs: Math.max(1, Math.min(3, els.length)),
+    arcCols: (els.length ? els : [null]).slice(0,3).map(e => e ? fzFamCol(e, sk) : sk.col),
+    seed: rnd(TAU)});
+
+  /* ── 5. BANNER ──
+     Throttled: a fusion on an 8s cooldown cannot restart the banner inside
+     its own tail, and two fusions in a build cannot fight over the band. */
+  if(fzBanner <= 0.55){
+    fzBanner = FZ_BANNER;
+    fzName   = sk.name;
+    fzCol    = sk.col;
+    fzGrade  = sk.grade || 0;
+    fzColA   = cA; fzColB = cB;
+    fzRecipe = els.map(e => (FAMILY[e] && FAMILY[e].name) || e).join(' · ');
+    fzKind   = String(sk.kind || '');
+  }
+}
+
+/* One sigil disc: a rune circle seen at a shallow angle.
+
+   Built with translate → scale(1, squash) → arcs, in that order. Scaling
+   before drawing means every feature is laid out on a circle and then the
+   whole plane is squashed, so ticks and arcs travel around a FIXED ellipse
+   the way a disc lying flat would. Rotating an already-squashed ellipse
+   instead would swing the ellipse itself around like a tumbling coin, which
+   reads as a mistake rather than as spin.
+
+   `detail` 1 draws the full rune (rims, ticks, family arcs, grade pips);
+   detail 0 draws just the rims and ticks, for the ground echo — a second
+   fully-detailed circle only competes with the first for attention. */
+function fzSigil(R, cx, cy, rad, squash, rot, a, detail){
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.scale(1, squash);
+
+  /* outer rim plus a hairline just inside it — a double rule is the cheapest
+     way to make a ring look engraved rather than drawn */
+  ctx.globalAlpha = a*0.9; ctx.strokeStyle = R.cA; ctx.lineWidth = 4;
+  ctx.beginPath(); ctx.arc(0,0,rad,0,TAU); ctx.stroke();
+  ctx.globalAlpha = a*0.45; ctx.lineWidth = 1.6;
+  ctx.beginPath(); ctx.arc(0,0,rad*0.92,0,TAU); ctx.stroke();
+
+  /* ticks on the rim, spinning one way */
+  ctx.globalAlpha = a*0.7; ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2.4;
+  ctx.beginPath();
+  for(let k=0;k<28;k++){
+    const ang = rot + k*TAU/28, c = Math.cos(ang), s = Math.sin(ang);
+    ctx.moveTo(c*rad*0.96, s*rad*0.96);
+    ctx.lineTo(c*rad*1.10, s*rad*1.10);
+  }
+  ctx.stroke();
+
+  if(detail){
+    /* one heavy arc per parent family, spinning the OTHER way. Counter-
+       rotation is what stops the circle reading as one rigid decal, and the
+       arcs are where the recipe is actually legible: three colours turning
+       against the rim is unmistakably "this came from three skills". */
+    const seg = TAU/R.arcs * 0.62;
+    ctx.lineWidth = 9;
+    for(let k=0;k<R.arcs;k++){
+      const a0 = -rot*1.35 + k*TAU/R.arcs;
+      ctx.globalAlpha = a*0.8;
+      ctx.strokeStyle = R.arcCols[k] || R.cA;
+      ctx.beginPath(); ctx.arc(0,0,rad*0.74, a0, a0+seg); ctx.stroke();
+    }
+    /* inner counter-ring + grade pips. The pip count IS the grade, drawn at
+       arena scale — the rail numeral says ✦3, this says it in shape. */
+    ctx.globalAlpha = a*0.55; ctx.strokeStyle = R.cB; ctx.lineWidth = 2.2;
+    ctx.beginPath(); ctx.arc(0,0,rad*0.48,0,TAU); ctx.stroke();
+
+    ctx.globalAlpha = a*0.95; ctx.fillStyle = '#ffffff';
+    for(let k=0;k<R.grade;k++){
+      const ang = -rot*1.35 + k*TAU/R.grade + Math.PI/R.grade;
+      const px = Math.cos(ang)*rad*1.02, py = Math.sin(ang)*rad*1.02, s = 9;
+      ctx.beginPath();
+      ctx.moveTo(px, py-s); ctx.lineTo(px+s*0.62, py);
+      ctx.lineTo(px, py+s); ctx.lineTo(px-s*0.62, py);
+      ctx.closePath(); ctx.fill();
+    }
+  }
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
+/* The world-space half of a fused cast.
+
+   THREE planes, because one is not enough here and each is doing a job the
+   others can't:
+
+     · the RUNE, squashed around the champion itself. This has to be at the
+       caster, not on the floor — the arena draws its fighters floating well
+       above the shadow line, so a rune on the floor plane sits 240px below
+       the champion and reads as a separate event happening near their feet.
+     · the ECHO on the actual floor plane, wider and plainer. This is what
+       grounds the strike, and it borrows the same line the nova scorch and
+       every fighter shadow already use (ARENA_H+18).
+     · the COLUMN joining the two, plus a HALO upright at the caster. The
+       arena has no vertical vocabulary at all, so a shaft straight up the
+       screen cuts through everything else on it. */
+function drawRites(rdt, t){
+  for(let i=rites.length-1;i>=0;i--){
+    const R = rites[i]; R.life -= rdt;
+    if(R.life<=0){ rites.splice(i,1); continue; }
+
+    /* clamped because every stage below feeds p into a radius or an alpha, and
+       one out-of-range frame is a thrown IndexSizeError rather than a wobble */
+    const p    = clamp(1 - R.life/R.max, 0, 1);          // 0 → 1
+    const fade = p > 0.66 ? 1 - (p-0.66)/0.34 : 1;       // long soft exit
+    const sc   = fzBack(clamp(p/0.24, 0, 1));            // snap-out overshoot
+    const rot  = t*0.75 + R.seed;
+    const rad  = 122 * sc;
+    const gy   = ARENA_H + 18;                           // the arena floor line
+
+    /* white-hot core, only for the first breath. This is the whole bloom for
+       the detonation — fuseCast cannot draw it (see the note there), so it
+       lives here, inside the render pass where it actually reaches a pixel. */
+    if(p < 0.22){
+      const q = 1 - p/0.22;
+      glow(R.x, R.cy, 60 + 220*(1-q), '#ffffff', q*0.7);
+      glow(R.x, R.cy, 130 + 190*(1-q), R.cA, q*0.5);
+      glow(R.x, R.cy, 100 + 150*(1-q), R.cB, q*0.35);
+    }
+
+    /* ── light column ──
+       Runs from the floor echo up through the champion and off the top of the
+       arena, so the two discs are visibly one event. Widest at the strike and
+       narrowing as it dies, so the shaft reads as collapsing into the caster
+       rather than fading out where it stands. */
+    if(p < 0.55){
+      const cp = p/0.55, w = 8 + (1-fzOut(cp))*62;
+      const g = ctx.createLinearGradient(R.x, gy, R.x, gy-520);
+      g.addColorStop(0,    R.cA+'00');
+      g.addColorStop(0.14, R.cA+'d0');
+      g.addColorStop(0.46, '#ffffff70');
+      g.addColorStop(1,    R.cB+'00');
+      ctx.globalAlpha = (1-cp)*0.7;
+      ctx.fillStyle = g;
+      ctx.fillRect(R.x - w/2, gy-520, w, 534);
+      ctx.globalAlpha = 1;
+    }
+
+    /* ground echo first, so the champion's own rune sits on top of it */
+    fzSigil(R, R.x, gy, rad*1.55, 0.24, -rot*0.5, fade*0.4, 0);
+    fzSigil(R, R.x, R.cy, rad, 0.34, rot, fade, 1);
+
+    /* ── halo ──
+       Upright, at chest height, with a bright arc chasing around it. Rises as
+       it fades, so the rite ends by lifting off the caster instead of just
+       switching off. */
+    const hr = 52 * sc, hy = R.cy - fzOut(p)*30;
+    ctx.globalAlpha = fade*0.5;
+    ctx.strokeStyle = R.cB; ctx.lineWidth = 2.4;
+    ctx.beginPath(); ctx.arc(R.x, hy, hr, 0, TAU); ctx.stroke();
+    ctx.globalAlpha = fade*0.95;
+    ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 3.4;
+    ctx.beginPath(); ctx.arc(R.x, hy, hr, -rot*2.4, -rot*2.4 + 1.05); ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    /* embers riding the column up off the floor echo, thinning as it closes */
+    if(p < 0.6 && Math.random() < 0.9){
+      spawn({x:R.x + rnd(rad*0.7,-rad*0.7), y:gy + rnd(6,-6),
+        vx:rnd(24,-24), vy:rnd(-240,-430),
+        col: Math.random()<0.5 ? R.cA : R.cB,
+        life:rnd(1.1,.6), r:rnd(3.6,1.4), grav:-30, drag:0.96, add:true});
+    }
+  }
 }
 
 function log(html){
@@ -1422,6 +1904,24 @@ function drawActs(sim, t){
         } else {
           ctx.fillStyle=e.core; ctx.beginPath(); ctx.arc(a.x,a.y,br,0,TAU); ctx.fill();
         }
+        /* ── fused projectile ──
+           A ticked collar spinning round the body, plus an ECHO body some
+           samples back down the trail in the other parent's colour. Two
+           bodies flying as one object is what makes Voltaic Rush read as a
+           fusion rather than a recoloured bolt. */
+        if(sk.fused && !a.basic){
+          const ink = fzInk(sk);
+          fzCollar(ink, a.x, a.y, br*3.1, t*3.1, 0.75, 0.60);
+          if(tn >= 12){
+            const ex = a.trail[tn-12], ey = a.trail[tn-11];
+            ctx.globalAlpha = 0.45; ctx.fillStyle = ink.b;
+            if(e.shape) e.shape(ex, ey, br*1.15, pang, t, a.id*1.37+9.4);
+            else { ctx.beginPath(); ctx.arc(ex, ey, br*0.85, 0, TAU); }
+            ctx.fill();
+            ctx.globalAlpha = 1;
+          }
+          if(Math.random() < 0.5) fzMote(sk, a.x, a.y, {spd:rnd(80,20), r:rnd(3.2,1.2)*V});
+        }
         break;
       }
       case 'beam': {
@@ -1483,6 +1983,32 @@ function drawActs(sim, t){
           efxSpark(sk, bp[0], bp[1],
             {vx:(x2-x1)*0.12+rnd(40,-40), vy:rnd(-30,-90), r:rnd(3.4,1.2)*V, life:rnd(.5,.2)});
         }
+        /* ── fused beam ──
+           Two counter-wound helices sleeve the channel, one per parent
+           colour, fattest at mid-span and pinched at both ends so they read
+           as braided around the bolt rather than crossing in front of it.
+           Turn count is the grade: ✦9 Thermal Lance is visibly tighter
+           wound than ✦1. */
+        if(sk.fused){
+          const ink = fzInk(sk);
+          const nx = -(y2-y1)/len, ny = (x2-x1)/len;
+          const turns = 1.6 + ink.k*2.4;
+          const amp   = w*1.9 + 7;
+          for(const dirn of [1,-1]){
+            const ik = dirn>0 ? ink : {a:ink.b, b:ink.a, hot:ink.hot};
+            ctx.beginPath();
+            for(let i=0;i<=28;i++){
+              const q  = i/28;
+              const off = Math.sin(q*turns*TAU + t*7.5*dirn) * amp * Math.sin(q*Math.PI);
+              const px = x1+(x2-x1)*q + nx*off, py = y1+(y2-y1)*q + ny*off;
+              i ? ctx.lineTo(px,py) : ctx.moveTo(px,py);
+            }
+            fzPass(ik, 0.8, 2.1, V, 0.12);
+          }
+          /* collar at the muzzle so the lance has a source, not just a line */
+          fzCollar(ink, x1, y1, w*2.6+14, -t*2.4, 0.7, 1);
+          ctx.globalAlpha=1;
+        }
         break;
       }
       case 'nova': {
@@ -1519,6 +2045,29 @@ function drawActs(sim, t){
         ctx.globalAlpha=(1-p)*0.20; ctx.strokeStyle=col; ctx.lineWidth=5*V;
         blobPath(a.f.x, ARENA_H+16, r*0.9, amp*0.7, seed+5.1, 0.27, spin*0.6); ctx.stroke();
         ctx.globalAlpha=1; ctx.lineJoin='miter';
+        /* ── fused nova ──
+           A second shell a beat behind in the other parent colour, counter-
+           drifting so the two fronts scissor rather than nest; then a ring
+           of radial lances snapping out along the ACTUAL distorted
+           wavefront. Iron Sentence lands as a verdict, not a ripple. */
+        if(sk.fused){
+          const ink = fzInk(sk);
+          ctx.lineJoin='round';
+          ctx.strokeStyle=ink.b; ctx.globalAlpha=(1-p)*0.5; ctx.lineWidth=(9*(1-p)+1.5)*V;
+          blobPath(a.f.x, a.f.y, r*0.86, amp*1.15, seed+21.7, 1, -spin*1.1); ctx.stroke();
+          const L = 6 + Math.round(ink.k*7);
+          ctx.lineCap='round';
+          ctx.beginPath();
+          for(let i=0;i<L;i++){
+            const aa = i*TAU/L + spin*0.5;
+            const rr = r*(1 + _loopNoise(aa + spin, seed, 6)*amp);
+            const c = Math.cos(aa), s = Math.sin(aa)*0.85;
+            ctx.moveTo(a.f.x+c*rr*0.70, a.f.y+s*rr*0.70);
+            ctx.lineTo(a.f.x+c*rr*1.16, a.f.y+s*rr*1.16);
+          }
+          fzPass(ink, (1-p)*0.9, 2.6, V, 0.22);
+          ctx.lineCap='butt'; ctx.lineJoin='miter'; ctx.globalAlpha=1;
+        }
         if(Math.random()<0.9*V){
           const aa=rnd(TAU);
           /* debris leaves from the DISTORTED wavefront — sampling the same
@@ -1559,6 +2108,26 @@ function drawActs(sim, t){
                                     dir>0? sk.spread:Math.PI+sk.spread);
         ctx.stroke();
         ctx.globalAlpha=1;
+        /* ── fused cone ──
+           A volley of blade arcs marching out through the wedge, alternating
+           parent colours and narrowing as they go, instead of one gradient
+           of fog with a single pressure line in it. Blade count is the
+           grade, so ✦9 Razor Gale is a wall of cuts. */
+        if(sk.fused){
+          const ink = fzInk(sk);
+          const N = 3 + Math.round(ink.k*3);
+          ctx.lineCap='round';
+          for(let i=0;i<N;i++){
+            const q  = (a.t*1.5 + i/N) % 1;
+            const rr = sk.reach*(0.16 + q*0.88);
+            const spd2 = sk.spread*(0.5 + q*0.55);
+            const ik = i%2 ? {a:ink.b, b:ink.a, hot:ink.hot} : ink;
+            ctx.beginPath();
+            ctx.arc(fx, fy, rr, dir>0?-spd2:Math.PI-spd2, dir>0?spd2:Math.PI+spd2);
+            fzPass(ik, (1-p)*(1-q*0.75)*0.9, 2.5, V, 0.15);
+          }
+          ctx.lineCap='butt'; ctx.globalAlpha=1;
+        }
         if(Math.random()<0.9){
           const aa=rnd(sk.spread,-sk.spread), rr=rnd(sk.reach);
           /* spray carries the element: a flame cone billows upward, a frost
@@ -1585,6 +2154,16 @@ function drawActs(sim, t){
             ctx.beginPath(); ctx.moveTo(a.tx+s*98, a.ty); ctx.lineTo(a.tx+s*66, a.ty); ctx.stroke();
           }
           ctx.globalAlpha=1;
+          /* ── fused reticle ──
+             The same seal the cast drew, stamped flat on the floor exactly
+             where the strike will land and tightening as it falls. The
+             detail pass (arcs + grade pips) only comes in late, so the early
+             frames stay readable when a barrage is inbound. */
+          if(sk.fused){
+            const rink = fzInk(sk);
+            fzSigil(rink, a.tx, a.ty, 96*(0.55+p*0.5), 0.28,
+                    t*1.3 + a.id, (0.28+p*0.55), p>0.45);
+          }
           /* falling body — a tumbling chunk of rock, not a line segment */
           const e = efxOf(sk);
           const seed = a.id*2.399;
@@ -1609,6 +2188,21 @@ function drawActs(sim, t){
           }
           ctx.globalAlpha=1;
           glow(a.tx,sy,28*V*e.glow,col,1);
+          /* ── fused meteor ──
+             A wide shroud in the OTHER parent colour flaring behind the mass,
+             plus a collar riding with it. Two elements bound into one falling
+             object, rather than one rock tinted a blend of them. */
+          if(sk.fused){
+            const mink = fzInk(sk);
+            glow(a.tx, sy, 42*V, mink.b, 0.5);
+            ctx.globalAlpha=0.40; ctx.fillStyle=mink.b;
+            shpRough(a.tx, sy, mr*1.6, -spin*0.35, 0, seed+7.7); ctx.fill();
+            ctx.globalAlpha=1;
+            fzCollar(mink, a.tx, sy, mr*2.1, -spin, 0.7, 0.5);
+            if(Math.random()<0.7)
+              fzMote(sk, a.tx+rnd(14,-14), sy,
+                {vx:rnd(60,-60), vy:rnd(-60,-190), r:rnd(4.4,1.6)*V});
+          }
           /* the meteor itself: an irregular polygon sampled at a FIXED
              noise time, so its outline is rigid and merely rotates —
              a solid tumbling, rather than a blob boiling in place */
@@ -1666,6 +2260,18 @@ function drawActs(sim, t){
            someone, not on a decorative sine. */
         const tick = a.per ? clamp(1 - (a.per - a.next)/0.22, 0, 1) : 0;
         const flash = tick*tick;
+
+        /* Fusion fields dispatch on the ARCHETYPE, never on sk.id: ids are
+           minted per grade (`fz_magmavein_3`), so keying on the id the way
+           the tier skills below do would match nothing and drop all seven
+           fusion fields into the fallback disc. `ink` carries both parent
+           family colours plus the grade weight `k` every count below
+           multiplies by, so ✦9 is visibly denser than ✦1. */
+        const fz  = sk.fused ? (sk.fuseOf || '') : '';
+        const ink = fz ? fzInk(sk) : null;
+        /* whole damage ticks elapsed — the discrete clock the archetypes that
+           BUILD (the tomb closing, the vein erupting) step on */
+        const bite = a.per ? Math.floor(a.t/a.per) : 0;
 
         if(sk.id==='gravitywell' || sk.id==='singularity'){
           /* ── ACCRETION VORTEX ──────────────────────────────────────
@@ -2073,6 +2679,472 @@ function drawActs(sim, t){
           ctx.globalAlpha=A*(0.5+flash*0.5); ctx.fillStyle=eg;
           ctx.beginPath(); ctx.arc(a.x, gy, R*0.26, 0, TAU); ctx.fill();
           for(const i of front) drawLink(i);
+        /* ── FUSION FIELD ARCHETYPES ──────────────────────────────
+           Keyed on sk.fuseOf, so all nine grades of a recipe share a
+           silhouette and differ only in density. Placed AHEAD of the
+           fallback disc, which stays the safety net for anything added
+           later. Every one of these carries both parent family colours
+           and obeys the two rules above: the arena is a floor, and
+           black paints nothing. */
+        } else if(fz==='magmavein'){
+          /* ── FISSURE NETWORK ───────────────────────────────────────
+             "The ground splits and something older comes up through it."
+             A branching crack network laid into the floor. Each crack is
+             three passes over one path — a wide crust shoulder in the
+             earthen parent, a molten seam that is hottest mid-run and
+             cools to the tips, then a white filament — and on every
+             damage tick one crack goes white-hot and vents a gout of
+             rising embers. Crack count is the grade, so a ✦9 vein webs
+             the whole footprint where a ✦1 only splits it. */
+          const NC = 5 + Math.round(ink.k*4);
+          /* the crack venting THIS tick walks the network, so successive
+             eruptions travel round the field instead of repeating */
+          const erupt = ((bite % NC) + NC) % NC;
+          const crackPts = (ca, len, wob, sd) => {
+            const pts = [];
+            for(let s=0;s<=9;s++){
+              const q  = s/9;
+              const aa = ca + _vnoise(sd + q*2.4)*wob;
+              const rr = len*q;
+              pts.push([a.x + Math.cos(aa)*rr, gy + Math.sin(aa)*rr*SQ]);
+            }
+            return pts;
+          };
+          const tracePath = pts => {
+            ctx.beginPath();
+            for(let i=0;i<pts.length;i++)
+              i ? ctx.lineTo(pts[i][0], pts[i][1]) : ctx.moveTo(pts[i][0], pts[i][1]);
+          };
+          ctx.lineCap='round'; ctx.lineJoin='round';
+          for(let c=0;c<NC;c++){
+            const h1 = _hash1(seed + c*3.1), h2 = _hash1(seed + c*3.1 + 17);
+            const ca = h1*TAU, len = R*(0.60 + h2*0.38);
+            const heat = c===erupt ? flash : 0;
+            const main = crackPts(ca, len, 0.30, seed + c*5.7);
+
+            /* the broken ground the seam runs through */
+            tracePath(main);
+            ctx.strokeStyle=ink.b; ctx.globalAlpha=A*(0.20+heat*0.20);
+            ctx.lineWidth=(9 + heat*7)*V; ctx.stroke();
+            /* the seam, stroked segment by segment because a single
+               stroke cannot taper — hot in the middle, cold at the tips */
+            for(let s=0;s<main.length-1;s++){
+              const q  = (s+0.5)/(main.length-1);
+              const hq = Math.sin(q*Math.PI);
+              ctx.beginPath();
+              ctx.moveTo(main[s][0], main[s][1]);
+              ctx.lineTo(main[s+1][0], main[s+1][1]);
+              ctx.strokeStyle=ink.a;
+              ctx.globalAlpha=A*(0.26 + hq*0.55 + heat*0.35);
+              ctx.lineWidth=(1.6 + hq*2.8 + heat*2.6)*V; ctx.stroke();
+            }
+            tracePath(main);
+            ctx.strokeStyle=ink.hot; ctx.globalAlpha=A*(0.14+heat*0.62);
+            ctx.lineWidth=Math.max(0.8, (0.9+heat*1.5)*V); ctx.stroke();
+            /* on the tick a bright pulse TRAVELS out along the crack —
+               the vein is feeding something, not merely glowing */
+            if(tick > 0){
+              const i0 = clamp(Math.floor(tick*(main.length-1)), 0, main.length-2);
+              ctx.beginPath();
+              ctx.moveTo(main[i0][0], main[i0][1]);
+              ctx.lineTo(main[i0+1][0], main[i0+1][1]);
+              ctx.strokeStyle=ink.hot; ctx.globalAlpha=A*(1-tick)*0.95;
+              ctx.lineWidth=4.5*V; ctx.stroke();
+            }
+            /* one branch per crack — split ground, not a starburst */
+            const bi = Math.round((0.42 + _hash1(seed+c+61)*0.26)*(main.length-1));
+            const bs = main[bi];
+            const bang = ca + (h2<0.5 ? 1 : -1)*(0.5 + h1*0.5);
+            ctx.beginPath(); ctx.moveTo(bs[0], bs[1]);
+            for(let s=1;s<=5;s++){
+              const q = s/5, aa = bang + _vnoise(seed+c*9.3+q*2)*0.34;
+              ctx.lineTo(bs[0] + Math.cos(aa)*len*0.42*q,
+                         bs[1] + Math.sin(aa)*len*0.42*q*SQ);
+            }
+            ctx.strokeStyle=ink.b; ctx.globalAlpha=A*0.16; ctx.lineWidth=5*V; ctx.stroke();
+            ctx.strokeStyle=ink.a; ctx.globalAlpha=A*(0.32+heat*0.3);
+            ctx.lineWidth=1.6*V; ctx.stroke();
+          }
+          ctx.lineCap='butt'; ctx.lineJoin='miter';
+
+          /* the dome — the "something older". FILLED, not hollowed: this
+             is the one part of the field that is matter rather than a
+             hole, so it gets a real gradient body. */
+          const dr = R*(0.19 + 0.05*Math.sin(t*1.7))*(0.7 + gi*0.3);
+          const dg = ctx.createRadialGradient(a.x, gy-dr*0.3, dr*0.05, a.x, gy, dr*1.15);
+          dg.addColorStop(0,    ink.hot+'ff');
+          dg.addColorStop(0.28, ink.a+'cc');
+          dg.addColorStop(0.70, ink.a+'55');
+          dg.addColorStop(1,    ink.a+'00');
+          ctx.globalAlpha=A*(0.7+flash*0.3); ctx.fillStyle=dg;
+          blobPath(a.x, gy, dr, 0.13, seed+8.2, 0.62, t*0.4); ctx.fill();
+          ctx.globalAlpha=A*(0.5+flash*0.5); ctx.strokeStyle=ink.hot; ctx.lineWidth=1.6*V;
+          blobPath(a.x, gy, dr, 0.13, seed+8.2, 0.62, t*0.4); ctx.stroke();
+
+          /* heat shimmer: the arena has almost no vertical vocabulary, so
+             a column of wisps over the dome is what sells the temperature */
+          ctx.strokeStyle=ink.a; ctx.globalAlpha=A*0.18; ctx.lineWidth=1.4*V;
+          for(let w=0;w<5;w++){
+            const wx = a.x + (w-2)*dr*0.44;
+            ctx.beginPath();
+            for(let s=0;s<=6;s++){
+              const q = s/6;
+              const px = wx + _vnoise(w*7.7 + q*3 + t*1.6)*11*q;
+              s ? ctx.lineTo(px, gy - q*R*0.55) : ctx.moveTo(px, gy);
+            }
+            ctx.stroke();
+          }
+          ctx.globalAlpha=1;
+          /* embers vent from the erupting crack and RISE (negative grav) */
+          if(tick > 0.5 && Math.random() < 0.9){
+            const ea = _hash1(seed + erupt*3.1)*TAU, eq = rnd(0.9, 0.2);
+            const ex = a.x + Math.cos(ea)*R*0.7*eq, ey = gy + Math.sin(ea)*R*0.7*eq*SQ;
+            for(let i=0;i<3;i++)
+              fzMote(sk, ex+rnd(9,-9), ey,
+                {vx:rnd(55,-55), vy:rnd(-140,-300), grav:-40, life:rnd(1.1,.6)});
+          }
+
+        } else if(fz==='umbralcollapse'){
+          /* ── FOLDING SHELL ─────────────────────────────────────────
+             Shells march INWARD and vanish at the middle — the reverse
+             of every other field here, and the whole reason it reads as
+             space being folded up rather than a blast going off. The
+             centre is left unpainted and ringed by an ANNULUS so it
+             stays black under `lighter`. */
+          const NS = 3 + Math.round(ink.k*3);
+          for(let s=0;s<NS;s++){
+            const q = 1 - ((t*0.42 + s/NS) % 1);      // 1 rim → 0 core
+            const rr = R*(0.14 + q*0.86);
+            const fade = Math.sin(q*Math.PI)*0.9 + 0.1;
+            blobPath(a.x, gy, rr, 0.10 + (1-q)*0.12, seed + s*13.1, SQ, -t*0.5 + s);
+            fzPass(s%2 ? {a:ink.b, b:ink.a, hot:ink.hot} : ink,
+                   A*fade*0.8, 2.2, V, flash*0.4);
+          }
+          /* creases where the shells fold, radial and brightening on the
+             tick — a shell with no creases reads as a bubble */
+          const NT = 5 + Math.round(ink.k*4);
+          ctx.beginPath();
+          for(let i=0;i<NT;i++){
+            const aa = i*TAU/NT - t*0.35;
+            const c = Math.cos(aa), sn = Math.sin(aa)*SQ;
+            ctx.moveTo(a.x + c*R*0.19, gy + sn*R*0.19);
+            ctx.lineTo(a.x + c*R*1.01, gy + sn*R*1.01);
+          }
+          fzPass(ink, A*(0.28+flash*0.40), 1.6, V, flash*0.3);
+          /* the hole: annulus only, so the middle stays unpainted */
+          const ug = ctx.createRadialGradient(a.x,gy,R*0.05, a.x,gy,R*0.28);
+          ug.addColorStop(0, ink.a+'00');
+          ug.addColorStop(0.55, ink.a+'cc');
+          ug.addColorStop(1, ink.a+'00');
+          ctx.globalAlpha=A*(0.55+flash*0.45); ctx.fillStyle=ug;
+          ctx.beginPath(); ctx.arc(a.x, gy, R*0.28, 0, TAU); ctx.fill();
+          ctx.globalAlpha=A*(0.7+flash*0.3); ctx.strokeStyle=ink.hot; ctx.lineWidth=1.8*V;
+          ctx.beginPath(); ctx.ellipse(a.x, gy, R*0.13, R*0.13*SQ, 0,0,TAU); ctx.stroke();
+          ctx.globalAlpha=1;
+
+        } else if(fz==='glaciertomb'){
+          /* ── SARCOPHAGUS ───────────────────────────────────────────
+             "The ground closes over them, one slow layer at a time."
+             Slabs rise out of the footprint and lean inward, and a NEW
+             layer is laid on every damage tick — so across the field's
+             life the tomb visibly corbels shut over whoever is inside.
+             Depth-sorted back to front, the same trick that turns the
+             frost cathedral's ring of sticks into a room. */
+          const HITS = Math.max(2, sk.hits || 4);
+          const LAY = Math.min(1 + bite, Math.min(5, HITS));
+          const N   = 9 + Math.round(ink.k*4);
+          const angOf = (l,i) => i*TAU/N + l*TAU/(N*2) + t*0.12;
+          const cells = [];
+          for(let l=0;l<LAY;l++) for(let i=0;i<N;i++) cells.push([l,i]);
+          cells.sort((u,w) => Math.sin(angOf(u[0],u[1])) - Math.sin(angOf(w[0],w[1])));
+          for(let c=0;c<cells.length;c++){
+            const l = cells[c][0], i = cells[c][1];
+            /* how far this layer has grown since it was laid */
+            const g2 = clamp((a.t - l*(a.per||0.6))/0.45, 0, 1);
+            if(g2 <= 0) continue;
+            const aa = angOf(l,i);
+            const d  = (Math.sin(aa)+1)*0.5;              // 0 far → 1 near
+            const lr = R*(0.93 - l*0.10);
+            const bx = a.x + Math.cos(aa)*lr, by = gy + Math.sin(aa)*lr*SQ;
+            const h  = R*0.17*g2*(0.7 + d*0.5);
+            const lean = R*0.085*l*g2;
+            const tx2 = bx - Math.cos(aa)*lean, ty2 = by - h - Math.sin(aa)*lean*SQ;
+            const wdt = (TAU*lr/N)*0.44;
+            const px = -Math.sin(aa)*wdt, py = Math.cos(aa)*wdt*SQ;
+            ctx.beginPath();
+            ctx.moveTo(bx-px, by-py); ctx.lineTo(bx+px, by+py);
+            ctx.lineTo(tx2+px*0.72, ty2+py*0.72); ctx.lineTo(tx2-px*0.72, ty2-py*0.72);
+            ctx.closePath();
+            const ik = l%2 ? {a:ink.b, b:ink.a, hot:ink.hot} : ink;
+            /* a faint body so the slab is ICE rather than a wireframe,
+               dimmer on the far side — that gradient across the ring is
+               what makes it read as enclosing space */
+            ctx.fillStyle=ik.a; ctx.globalAlpha=A*(0.09 + d*0.15)*g2; ctx.fill();
+            fzPass(ik, A*(0.26 + d*0.44)*g2, 1.5, V, flash*0.3);
+          }
+          /* the lid, thickening as the layers stack */
+          const closed = clamp(LAY/Math.min(5,HITS), 0, 1);
+          if(closed > 0.25){
+            const lidR = R*0.46*closed;
+            /* The lid sits over the brightest part of the ring, and under
+               `lighter` a fill plus three stroke passes there clips to flat
+               white — the tomb loses its slabs at the exact moment it is
+               meant to read as SHUT. Hold the fill down and taper the rim
+               back as it closes, so full closure is a dense cap rather than
+               a hole burned in the frame. */
+            ctx.globalAlpha=A*closed*0.07; ctx.fillStyle=ink.b;
+            blobPath(a.x, gy - R*0.26*closed, lidR, 0.08, seed+4.4, 0.5, t*0.1); ctx.fill();
+            fzPass(ink, A*(0.42 - closed*0.14), 1.8, V, flash*0.18);
+          }
+          ctx.globalAlpha=1;
+          /* frost falls off the slabs instead of rising off the floor */
+          if(Math.random()<0.8){
+            const aa = rnd(TAU);
+            fzMote(sk, a.x+Math.cos(aa)*R*0.93, gy+Math.sin(aa)*R*0.93*SQ - R*0.2,
+              {vx:rnd(30,-30), vy:rnd(90,20), grav:180, life:rnd(.8,.4)});
+          }
+
+        } else if(fz==='rotcrown'){
+          /* ── CROWN OF THORNS ───────────────────────────────────────
+             "It crowns them, and then it eats." Thorns rise from the
+             footprint and hook INWARD over the middle — the grasping
+             roots' arc-lift pointed the other way — above a web that
+             re-strings itself on every damage tick. And it drips. */
+          const NTh = 8 + Math.round(ink.k*6);
+          const tips = [];
+          ctx.lineCap='round'; ctx.lineJoin='round';
+          for(let i=0;i<NTh;i++){
+            const aa = i*TAU/NTh + t*0.16;
+            const h1 = _hash1(seed + i*2.9);
+            const bx = a.x + Math.cos(aa)*R*0.94, by = gy + Math.sin(aa)*R*0.94*SQ;
+            const H  = R*(0.30 + h1*0.22)*gi;
+            const pts = [];
+            for(let s=0;s<=8;s++){
+              const q = s/8;
+              /* rises on a quarter-sine, then curls back over the centre
+                 on a q² pull — the two together make a hook, where either
+                 alone would only make a stalk or a ramp */
+              const lift = Math.sin(q*Math.PI*0.62)*H;
+              const inw  = q*q*R*(0.42 + h1*0.24);
+              pts.push([bx - Math.cos(aa)*inw, by - lift - Math.sin(aa)*inw*SQ]);
+            }
+            const tip = pts[pts.length-1];
+            tips.push(tip);
+            ctx.beginPath();
+            for(let s=0;s<pts.length;s++)
+              s ? ctx.lineTo(pts[s][0],pts[s][1]) : ctx.moveTo(pts[s][0],pts[s][1]);
+            fzPass(i%2 ? {a:ink.b, b:ink.a, hot:ink.hot} : ink,
+                   A*(0.52+flash*0.30), 2.6*(0.7+h1*0.6), V, flash*0.25);
+            /* barbs along the back of the thorn, on the path normal */
+            ctx.beginPath();
+            for(let s=2;s<pts.length-1;s+=2){
+              const dx = pts[s+1][0]-pts[s-1][0], dy = pts[s+1][1]-pts[s-1][1];
+              const m = Math.hypot(dx,dy)||1, bl = R*0.055;
+              ctx.moveTo(pts[s][0], pts[s][1]);
+              ctx.lineTo(pts[s][0] - dy/m*bl, pts[s][1] + dx/m*bl);
+            }
+            ctx.strokeStyle=ink.a; ctx.globalAlpha=A*0.5; ctx.lineWidth=1.4*V; ctx.stroke();
+            if(Math.random() < 0.05 + flash*0.30)
+              fzMote(sk, tip[0], tip[1],
+                {vx:rnd(20,-20), vy:rnd(40,10), grav:340, drag:1, life:rnd(.9,.5)});
+          }
+          ctx.lineCap='butt'; ctx.lineJoin='miter';
+          /* the web strung between the tips, re-chorded each tick */
+          ctx.beginPath();
+          for(let i=0;i<tips.length;i++){
+            const j = (i + 2 + (bite % 2)) % tips.length;
+            ctx.moveTo(tips[i][0], tips[i][1]); ctx.lineTo(tips[j][0], tips[j][1]);
+          }
+          fzPass(ink, A*(0.13+flash*0.30), 1.3, V, flash*0.2);
+          /* gore pooling under the crown */
+          const rg = ctx.createRadialGradient(a.x,gy,R*0.03, a.x,gy,R*0.44);
+          rg.addColorStop(0,    ink.hot+'aa');
+          rg.addColorStop(0.35, ink.a+'88');
+          rg.addColorStop(1,    ink.a+'00');
+          ctx.globalAlpha=A*(0.40+flash*0.40); ctx.fillStyle=rg;
+          blobPath(a.x, gy, R*0.44, 0.16, seed+2.2, SQ, t*0.2); ctx.fill();
+          ctx.globalAlpha=1;
+
+        } else if(fz==='nullaperture'){
+          /* ── IRIS ──────────────────────────────────────────────────
+             Deliberately MACHINED where the gravity well is fluid: an
+             aperture whose blades dilate and snap on the damage tick,
+             around a genuinely unpainted pupil. Blade count is the
+             grade, so ✦9 is a finer instrument than ✦1. */
+          const NB = 6 + Math.round(ink.k*5);
+          const open = 0.28 + Math.sin(t*1.3)*0.09 + flash*0.26;
+          const rot  = t*0.28;
+          ctx.save(); ctx.translate(a.x, gy); ctx.scale(1, SQ);
+          /* housing: two rules and a ring of index marks — hard edges,
+             evenly spaced, nothing organic anywhere */
+          ctx.globalAlpha=A*0.52; ctx.strokeStyle=ink.b; ctx.lineWidth=3.4*V;
+          ctx.beginPath(); ctx.arc(0,0,R*0.98,0,TAU); ctx.stroke();
+          ctx.globalAlpha=A*0.30; ctx.lineWidth=1.4*V;
+          ctx.beginPath(); ctx.arc(0,0,R*0.88,0,TAU); ctx.stroke();
+          ctx.globalAlpha=A*0.48; ctx.strokeStyle=ink.a; ctx.lineWidth=2*V;
+          ctx.beginPath();
+          for(let i=0;i<NB*3;i++){
+            const aa = rot + i*TAU/(NB*3), c=Math.cos(aa), s=Math.sin(aa);
+            ctx.moveTo(c*R*0.90, s*R*0.90); ctx.lineTo(c*R*0.98, s*R*0.98);
+          }
+          ctx.stroke();
+          /* the blades. Each stops SHORT of the middle on a straight
+             chord, which is what leaves the pupil unpainted — a blade
+             drawn to the centre would fill the hole back in. */
+          for(let i=0;i<NB;i++){
+            const a0 = -rot*1.4 + i*TAU/NB, a1 = a0 + TAU/NB*1.06;
+            const ir = R*open;
+            ctx.beginPath();
+            ctx.moveTo(Math.cos(a0)*R*0.9, Math.sin(a0)*R*0.9);
+            ctx.lineTo(Math.cos(a0)*ir,    Math.sin(a0)*ir);
+            ctx.lineTo(Math.cos(a1)*ir,    Math.sin(a1)*ir);
+            ctx.lineTo(Math.cos(a1)*R*0.9, Math.sin(a1)*R*0.9);
+            ctx.closePath();
+            const bc = i%2 ? ink.b : ink.a;
+            ctx.fillStyle=bc;   ctx.globalAlpha=A*(0.09 + flash*0.10); ctx.fill();
+            ctx.strokeStyle=bc; ctx.globalAlpha=A*0.55; ctx.lineWidth=1.6*V; ctx.stroke();
+          }
+          ctx.globalAlpha=A*(0.85+flash*0.15); ctx.strokeStyle=ink.hot; ctx.lineWidth=2.4*V;
+          ctx.beginPath(); ctx.arc(0,0,R*open,0,TAU); ctx.stroke();
+          ctx.restore();
+          /* warp rings pinch INWARD toward the pupil — the aperture is
+             taking, not radiating */
+          for(let w=0;w<3;w++){
+            const q = 1 - ((t*0.6 + w/3) % 1);
+            const rr = R*(open + q*(0.95-open));
+            ctx.globalAlpha=A*Math.sin(q*Math.PI)*0.38;
+            ctx.strokeStyle=ink.hot; ctx.lineWidth=1.4*V;
+            ctx.beginPath(); ctx.ellipse(a.x, gy, rr, rr*SQ, 0,0,TAU); ctx.stroke();
+          }
+          ctx.globalAlpha=1;
+          if(Math.random()<0.8){
+            const aa = rnd(TAU);
+            fzMote(sk, a.x+Math.cos(aa)*R*0.95, gy+Math.sin(aa)*R*0.95*SQ,
+              {vx:-Math.cos(aa)*rnd(420,220), vy:-Math.sin(aa)*rnd(420,220)*SQ,
+               drag:0.94, life:rnd(.6,.3)});
+          }
+
+        } else if(fz==='nullity'){
+          /* ── ERASURE GRID ──────────────────────────────────────────
+             The field works by DELETING, so the visual has to be things
+             going missing rather than things arriving: a lattice clipped
+             to the footprint whose cells wink out, leaving hollow rims
+             the eye reads as holes. A struck-through rune above the
+             middle carries the silence. */
+          const CELL = Math.max(15, R*0.20 - ink.k*4);
+          ctx.save();
+          ctx.beginPath(); ctx.ellipse(a.x, gy, R*0.99, R*0.99*SQ, 0,0,TAU); ctx.clip();
+          ctx.globalAlpha=A*0.30; ctx.strokeStyle=ink.b; ctx.lineWidth=1.2*V;
+          ctx.beginPath();
+          for(let gx=-R; gx<=R; gx+=CELL){
+            ctx.moveTo(a.x+gx, gy-R*SQ); ctx.lineTo(a.x+gx, gy+R*SQ);
+          }
+          for(let gv=-R*SQ; gv<=R*SQ; gv+=CELL*SQ){
+            ctx.moveTo(a.x-R, gy+gv); ctx.lineTo(a.x+R, gy+gv);
+          }
+          ctx.stroke();
+          /* the cells that are currently GONE. Which ones is seeded on
+             the tick, so the erasure marches instead of flickering. */
+          const NX = Math.max(1, Math.floor(2*R/CELL));
+          const gone = 3 + Math.round(ink.k*7);
+          for(let i=0;i<gone;i++){
+            const h1 = _hash1(seed + i*4.7 + bite*1.3);
+            const h2 = _hash1(seed + i*4.7 + bite*1.3 + 29);
+            /* Sample inside the footprint DISC and then snap to the lattice,
+               rather than indexing the bounding box directly: a fifth of the
+               box lies outside the ellipse, and those picks were being eaten
+               by the clip — the erasure bunched to whichever quadrant the
+               hash happened to favour instead of spreading. sqrt(h2) makes
+               the radius area-uniform so the middle isn't over-picked. */
+            const ang2 = h1*TAU, rad2 = Math.sqrt(h2)*0.80;
+            const kx = clamp(Math.round((Math.cos(ang2)*rad2*R + R)/CELL), 0, NX-1);
+            const ky = clamp(Math.round((Math.sin(ang2)*rad2*R + R)/CELL), 0, NX-1);
+            const cx2 = a.x - R    + kx*CELL;
+            const cy2 = gy - R*SQ  + ky*CELL*SQ;
+            ctx.globalAlpha=A*(0.48+flash*0.5); ctx.strokeStyle=ink.a; ctx.lineWidth=2*V;
+            ctx.strokeRect(cx2, cy2, CELL, CELL*SQ);
+            ctx.globalAlpha=A*(0.28+flash*0.4); ctx.strokeStyle=ink.hot; ctx.lineWidth=1*V;
+            ctx.strokeRect(cx2+2, cy2+1, CELL-4, Math.max(1, CELL*SQ-2));
+          }
+          ctx.restore();
+          /* the rune, struck through */
+          ctx.save(); ctx.translate(a.x, gy - R*0.42);
+          const rr2 = R*0.21*(0.85+flash*0.15);
+          ctx.globalAlpha=A*0.68; ctx.strokeStyle=ink.a; ctx.lineWidth=2.4*V;
+          ctx.beginPath();
+          for(let s=0;s<6;s++){
+            const aa = -Math.PI/2 + s*TAU/6;
+            const px = Math.cos(aa)*rr2, py = Math.sin(aa)*rr2*0.8;
+            s ? ctx.lineTo(px,py) : ctx.moveTo(px,py);
+          }
+          ctx.closePath(); ctx.stroke();
+          ctx.globalAlpha=A*(0.78+flash*0.22); ctx.strokeStyle=ink.hot; ctx.lineWidth=3*V;
+          ctx.beginPath();
+          ctx.moveTo(-rr2*1.15, rr2*0.55); ctx.lineTo(rr2*1.15, -rr2*0.55); ctx.stroke();
+          ctx.restore();
+          ctx.globalAlpha=1;
+          /* nothing rises out of an erasure — motes fall into the floor */
+          if(Math.random()<0.6){
+            const aa = rnd(TAU), q = rnd(1,0.2);
+            fzMote(sk, a.x+Math.cos(aa)*R*q, gy+Math.sin(aa)*R*q*SQ - 44,
+              {vx:rnd(20,-20), vy:rnd(120,40), grav:60, life:rnd(.5,.25)});
+          }
+
+        } else if(fz==='vitaefamine'){
+          /* ── DRAINING MAW ──────────────────────────────────────────
+             Everything travels INWARD and the throat stays unpainted —
+             a mouth, not a light. Siphon threads sweep from the rim to
+             the middle, a bead crawls down each one, and the tide rings
+             recede instead of expanding. */
+          const NTr = 7 + Math.round(ink.k*6);
+          ctx.lineCap='round';
+          for(let i=0;i<NTr;i++){
+            const h1 = _hash1(seed + i*3.3);
+            const a0 = i*TAU/NTr + t*0.22;
+            const sweep = 0.55 + h1*0.5;
+            ctx.beginPath();
+            for(let s=0;s<=14;s++){
+              const q  = s/14;                       // 1 rim → 0 throat
+              const rr = R*(0.20 + (1-q)*0.78);
+              /* the thread SWEEPS as it comes in, so the draw reads as a
+                 spiral drag rather than a spoke */
+              const aa = a0 + q*sweep;
+              const px = a.x + Math.cos(aa)*rr, py = gy + Math.sin(aa)*rr*SQ;
+              s ? ctx.lineTo(px,py) : ctx.moveTo(px,py);
+            }
+            const ik = i%2 ? {a:ink.b, b:ink.a, hot:ink.hot} : ink;
+            fzPass(ik, A*(0.38+flash*0.30), 1.8, V, flash*0.2);
+            /* the bead: it swells as it nears the throat, so the thread
+               is visibly CARRYING something down it */
+            const bq  = 1 - ((t*0.55 + h1) % 1);
+            const brr = R*(0.20 + (1-bq)*0.78);
+            const baa = a0 + bq*sweep;
+            const bx = a.x + Math.cos(baa)*brr, by = gy + Math.sin(baa)*brr*SQ;
+            ctx.globalAlpha=A*0.85; ctx.fillStyle=ink.hot;
+            ctx.beginPath(); ctx.arc(bx, by, (2.2 + (1-bq)*2.2)*V, 0, TAU); ctx.fill();
+            glow(bx, by, 13*V, ik.a, A*0.5);
+          }
+          ctx.lineCap='butt';
+          for(let w=0;w<3;w++){
+            const q = 1 - ((t*0.5 + w/3) % 1);
+            const rr = R*(0.20 + q*0.78);
+            ctx.globalAlpha=A*Math.sin(q*Math.PI)*0.34;
+            ctx.strokeStyle=ink.b; ctx.lineWidth=2.6*V;
+            blobPath(a.x, gy, rr, 0.09, seed+w*7.7, SQ, t*0.3); ctx.stroke();
+          }
+          /* the throat: annulus rim over an unpainted middle, with a lip
+             that works on the damage tick */
+          const lip = R*(0.19 + flash*0.05);
+          const tg = ctx.createRadialGradient(a.x,gy,lip*0.25, a.x,gy,lip*1.5);
+          tg.addColorStop(0,   ink.a+'00');
+          tg.addColorStop(0.5, ink.a+'cc');
+          tg.addColorStop(1,   ink.a+'00');
+          ctx.globalAlpha=A*(0.55+flash*0.45); ctx.fillStyle=tg;
+          ctx.beginPath(); ctx.arc(a.x, gy, lip*1.5, 0, TAU); ctx.fill();
+          ctx.globalAlpha=A*(0.78+flash*0.22); ctx.strokeStyle=ink.hot; ctx.lineWidth=2.2*V;
+          ctx.beginPath(); ctx.ellipse(a.x, gy, lip, lip*SQ, 0,0,TAU); ctx.stroke();
+          ctx.globalAlpha=1;
+
         } else {
           /* fallback for any field skill added later — the original disc */
           const pulse = 0.5+Math.sin(t*5)*0.16;
@@ -2088,10 +3160,21 @@ function drawActs(sim, t){
            the floor rather than a line the structure sits on top of.
            Geometric archetypes get a clean ellipse, grown ones get a
            noisy outline — the boundary itself carries the character. */
-        const organic = sk.id==='plaguewell' || sk.id==='grasproots';
-        ctx.globalAlpha=A*(0.42+flash*0.3); ctx.strokeStyle=col; ctx.lineWidth=2.2*V;
+        const organic = sk.id==='plaguewell' || sk.id==='grasproots' ||
+                        fz==='magmavein'    || fz==='rotcrown' ||
+                        fz==='vitaefamine'  || fz==='umbralcollapse';
+        ctx.globalAlpha=A*(0.42+flash*0.3);
+        ctx.strokeStyle=ink ? ink.a : col; ctx.lineWidth=2.2*V;
         if(organic){ blobPath(a.x, gy, R*0.99, 0.07, seed+3, SQ, t*0.25); ctx.stroke(); }
         else { ctx.beginPath(); ctx.ellipse(a.x, gy, R*0.99, R*0.99*SQ, 0,0,TAU); ctx.stroke(); }
+        /* a fused field's edge is drawn TWICE — once per parent — with the
+           second rule set slightly inside, so the boundary itself says which
+           two families made it */
+        if(ink){
+          ctx.globalAlpha=A*(0.26+flash*0.24); ctx.strokeStyle=ink.b; ctx.lineWidth=1.4*V;
+          if(organic){ blobPath(a.x, gy, R*0.93, 0.07, seed+3, SQ, t*0.25); ctx.stroke(); }
+          else { ctx.beginPath(); ctx.ellipse(a.x, gy, R*0.93, R*0.93*SQ, 0,0,TAU); ctx.stroke(); }
+        }
         ctx.globalAlpha=1;
 
         /* field motes — unchanged behaviour, but launched from the ground
@@ -2108,6 +3191,7 @@ function drawActs(sim, t){
       }
       case 'orbit': {
         const e = efxOf(sk);
+        const oink = sk.fused ? fzInk(sk) : null;
         for(let i=0;i<sk.count;i++){
           const aa = a.a + i*TAU/sk.count;
           const ox = a.f.x+Math.cos(aa)*90, oy = a.f.y+Math.sin(aa)*90*0.6;
@@ -2122,6 +3206,28 @@ function drawActs(sim, t){
           ctx.fillStyle=e.core; ctx.beginPath(); ctx.arc(ox,oy,3.6*V,0,TAU); ctx.fill();
           if(Math.random()<0.5)
             efxSpark(sk, ox, oy, {spd:rnd(80,20), r:rnd(3,1.2)*V, life:rnd(.45,.2)});
+          /* a collar per body, alternating which parent leads, so the ring
+             of satellites carries both families around the caster */
+          if(oink){
+            const ik = i%2 ? {a:oink.b, b:oink.a, hot:oink.hot, k:oink.k} : oink;
+            fzCollar(ik, ox, oy, 11*V, -a.a*2.2 + i, 0.65, 0.6);
+          }
+        }
+        /* ── fused orbit ──
+           The satellites are CHORDED to each other by a rotating polygon web
+           and stand on a floor seal, so Phase Tempest reads as one bound
+           apparatus rather than N independent motes. */
+        if(oink && sk.count > 1){
+          const step = sk.count > 3 ? 2 : 1;   // a star for 4+, a ring for 3
+          ctx.beginPath();
+          for(let i=0;i<sk.count;i++){
+            const a1 = a.a + i*TAU/sk.count, a2 = a.a + ((i+step)%sk.count)*TAU/sk.count;
+            ctx.moveTo(a.f.x+Math.cos(a1)*90, a.f.y+Math.sin(a1)*90*0.6);
+            ctx.lineTo(a.f.x+Math.cos(a2)*90, a.f.y+Math.sin(a2)*90*0.6);
+          }
+          fzPass(oink, 0.5, 1.5, V, 0.05);
+          ctx.globalAlpha=1;
+          fzSigil(oink, a.f.x, ARENA_H+18, 104, 0.3, -a.a*0.7, 0.30, false);
         }
         break;
       }
@@ -2132,6 +3238,19 @@ function drawActs(sim, t){
 
 function drawFx(rdt, t){
   ctx.save(); ctx.globalCompositeOperation='lighter';
+
+  /* fused-cast rites go down FIRST so the floor circle sits under the debris
+     the same cast threw, not on top of it */
+  drawRites(rdt, t);
+
+  /* floor seals from fused effects — grow out and fade, detail dropping first */
+  for(let i=stamps.length-1;i>=0;i--){
+    const s = stamps[i]; s.life-=rdt;
+    if(s.life<=0){ stamps.splice(i,1); continue; }
+    const q = 1 - s.life/s.max;                 // 0 → 1
+    fzSigil(s.ink, s.x, s.y, s.rad*(0.5+fzOut(q)*0.5), 0.3,
+            t*0.8, (1-q)*0.85, q < 0.65);
+  }
 
   /* ghosts (dash after-images) */
   for(let i=ghosts.length-1;i>=0;i--){
@@ -2186,13 +3305,18 @@ function drawFx(rdt, t){
     ctx.ellipse(0,0,s.len/2, 9*a+1.5, 0,0,TAU); ctx.fill();
     ctx.restore(); ctx.globalAlpha=1;
   }
-  /* rings */
+  /* rings — `sq` squashes onto the arena floor plane. Absent on the older
+     screen-space rings (crits, CC, shields), which stay perfect circles. */
   for(let i=rings.length-1;i>=0;i--){
     const r = rings[i]; r.life-=rdt; r.r += r.vr*rdt;
     if(r.life<=0){ rings.splice(i,1); continue; }
     const a = r.life/r.max;
+    const rr = Math.max(1, r.r);
     ctx.strokeStyle=r.col; ctx.globalAlpha=a*0.9; ctx.lineWidth=r.w*a+0.6;
-    ctx.beginPath(); ctx.arc(r.x,r.y,Math.max(1,r.r),0,TAU); ctx.stroke();
+    ctx.beginPath();
+    if(r.sq) ctx.ellipse(r.x, r.y, rr, rr*r.sq, 0, 0, TAU);
+    else     ctx.arc(r.x, r.y, rr, 0, TAU);
+    ctx.stroke();
     ctx.globalAlpha=1;
   }
   /* particles */
@@ -2438,34 +3562,168 @@ function frame(now){
     ctx.restore();
   }
 
-  /* fused-cast announcement — same slam-in shape as sudden death, smaller
-     and higher up, and suppressed entirely while sudden death is on screen
-     so the two never fight for the same band. */
+  /* fused-cast announcement — suppressed entirely while sudden death is on
+     screen so the two never fight for the same band. */
   if(fzBanner>0){
     fzBanner = Math.max(0, fzBanner - rdt);
-    if(sdBanner<=0){
-      const life = 1 - fzBanner/FZ_BANNER;
-      const rise = Math.min(1, life*8);
-      const fade = fzBanner<0.45 ? fzBanner/0.45 : 1;
-      const cy   = VIEW.h*0.155 + (1-rise)*22;
-      ctx.save();
-      ctx.globalAlpha = fade;
-      ctx.textAlign='center'; ctx.textBaseline='middle';
-      ctx.globalCompositeOperation='lighter';
-      ctx.fillStyle=fzCol;
-      ctx.shadowColor=fzCol; ctx.shadowBlur=24;
-      ctx.font=`800 ${Math.round(VIEW.h*0.038)}px ui-sans-serif,system-ui,sans-serif`;
-      const jit = fzBanner>FZ_BANNER-0.2 ? rnd(-2,2) : 0;
-      ctx.fillText(fzName.toUpperCase(), VIEW.w/2 + jit, cy);
-      ctx.shadowBlur=0;
-      ctx.globalCompositeOperation='source-over';
-      ctx.globalAlpha = fade*0.75;
-      ctx.fillStyle='#e8ecff';
-      ctx.font=`700 ${Math.round(VIEW.h*0.017)}px ui-sans-serif,system-ui,sans-serif`;
-      ctx.fillText(`FUSED${fzGrade?' ✦'+fzGrade:''}`, VIEW.w/2, cy+22);
-      ctx.restore();
-    }
+    if(sdBanner<=0) drawFuseBanner(t);
   }
+}
+
+/* The screen-space half of a fused cast.
+
+   The ordinary cast has no banner and sudden death has a plain centred one,
+   so this deliberately uses a THIRD shape: a slab that wipes open from the
+   centre, the name split into the recipe's two family colours, and the recipe
+   itself spelled out underneath. The split is the tell — nothing else in the
+   game draws text in two colours at once, so even at a glance, before a word
+   is read, the treatment alone says "fusion".
+
+   All sizes are fractions of VIEW.h, which is already device-pixel scaled, so
+   this holds up from a phone to a 4K window without a second set of numbers. */
+function drawFuseBanner(t){
+  const p    = 1 - fzBanner/FZ_BANNER;
+  const wipe = fzOut(clamp(p/0.22, 0, 1));           // slab opening
+  const rise = fzOut(clamp(p/0.16, 0, 1));           // text settling
+  const fade = fzBanner < 0.5 ? fzBanner/0.5 : 1;
+  const cy   = VIEW.h*0.175 - (1-rise)*20;
+  let   nsz  = Math.round(VIEW.h*0.062);              // shrunk to fit, below
+  const ssz  = Math.round(VIEW.h*0.019);
+  /* Three stacked bands — name, FUSED+pips, recipe — so the slab has to be
+     tall enough for all of them plus air. Sized off the name, since that is
+     the one line whose height is fixed by legibility rather than by taste. */
+  const half = VIEW.h*0.074;                          // slab half-height
+
+  ctx.save();
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+
+  /* ── slab ──
+     Opens from the centre outward, which points the eye at the name rather
+     than dragging it across the screen the way a left-to-right wipe would.
+     Kept dark and only semi-opaque: it has to carry white text over a lit
+     arena without hiding the fight underneath it. */
+  const sw = VIEW.w*wipe;
+  ctx.globalAlpha = fade*0.62;
+  const sg = ctx.createLinearGradient(VIEW.w/2 - sw/2, 0, VIEW.w/2 + sw/2, 0);
+  sg.addColorStop(0,    '#05060c00');
+  sg.addColorStop(0.28, '#05060cee');
+  sg.addColorStop(0.72, '#05060cee');
+  sg.addColorStop(1,    '#05060c00');
+  ctx.fillStyle = sg;
+  ctx.fillRect(VIEW.w/2 - sw/2, cy-half, sw, half*2);
+
+  ctx.globalCompositeOperation='lighter';
+
+  /* hairline rules top and bottom, each in one family's colour — the recipe
+     frames the name before you read either */
+  ctx.globalAlpha = fade*0.85;
+  for(const [yy,cc] of [[cy-half, fzColA], [cy+half, fzColB]]){
+    const rg = ctx.createLinearGradient(VIEW.w/2 - sw/2, 0, VIEW.w/2 + sw/2, 0);
+    rg.addColorStop(0, cc+'00'); rg.addColorStop(0.5, cc); rg.addColorStop(1, cc+'00');
+    ctx.fillStyle = rg;
+    ctx.fillRect(VIEW.w/2 - sw/2, yy-1, sw, 2);
+  }
+
+  /* ── the name ──
+     Drawn three times: the two family colours offset apart, then white on
+     top. The offset collapses to zero over the first third, so the letters
+     visibly SNAP together out of their two halves — the fusion assembling
+     itself, in the one element the player is already looking at. */
+  const split = (1 - fzOut(clamp(p/0.34,0,1))) * VIEW.h*0.012;
+  const jit   = p < 0.10 ? rnd(3,-3) : 0;
+  const name  = fzName.toUpperCase();
+  if('letterSpacing' in ctx) ctx.letterSpacing = `${Math.round(nsz*0.07)}px`;
+  /* Fusion names run from CATACLYSM to TEN THOUSAND WINDS — twice the width —
+     and a portrait viewport is barely wider than the short one at full size.
+     So the size is measured down to fit rather than picked: the banner is the
+     one element that MUST stay readable, and a clipped name would undo the
+     whole point of naming the skill. Measured after letterSpacing is set,
+     since spacing is part of the width. */
+  ctx.font = `800 ${nsz}px ui-sans-serif,system-ui,sans-serif`;
+  const nfit = VIEW.w*0.88;
+  const nw   = ctx.measureText(name).width;
+  if(nw > nfit){
+    nsz = Math.max(12, Math.floor(nsz * nfit/nw));
+    if('letterSpacing' in ctx) ctx.letterSpacing = `${Math.round(nsz*0.07)}px`;
+    ctx.font = `800 ${nsz}px ui-sans-serif,system-ui,sans-serif`;
+  }
+  const nx = VIEW.w/2 + jit, ny = cy - half*0.30;
+
+  ctx.globalAlpha = fade*0.9;
+  ctx.fillStyle = fzColA; ctx.fillText(name, nx - split, ny);
+  ctx.fillStyle = fzColB; ctx.fillText(name, nx + split, ny);
+  ctx.globalAlpha = fade;
+  ctx.shadowColor = fzCol; ctx.shadowBlur = 30;
+  ctx.fillStyle = '#ffffff'; ctx.fillText(name, nx, ny);
+  ctx.shadowBlur = 0;
+
+  /* a specular sheen travelling across the slab once, early — the cue that
+     the thing just landed and is still hot */
+  if(p < 0.55){
+    const sp = p/0.55, band = VIEW.w*0.22;
+    const cxs = VIEW.w*(-0.15) + sp*VIEW.w*1.3;
+    const hg = ctx.createLinearGradient(cxs-band, 0, cxs+band, 0);
+    hg.addColorStop(0, '#ffffff00');
+    hg.addColorStop(0.5, '#ffffff');
+    hg.addColorStop(1, '#ffffff00');
+    ctx.globalAlpha = fade*(1-sp)*0.16;
+    ctx.fillStyle = hg;
+    ctx.fillRect(VIEW.w/2 - sw/2, cy-half, sw, half*2);
+  }
+  if('letterSpacing' in ctx) ctx.letterSpacing = '0px';
+
+  /* ── grade line, then the recipe ──
+     "FUSED" alone was the old subtitle and it said nothing the name didn't.
+     The recipe is the interesting fact: it is WHY this skill is stronger, and
+     seeing "Fire · Frost · Storm" is what makes the cost of the slots feel
+     paid back. Kind is appended because a fusion's delivery often differs
+     from either parent's.
+
+     The word and the pips are drawn separately, and laid out by measuring
+     rather than by padding a single string: the pips carry the family colour
+     (so the grade is colour-coded to the recipe) while FUSED stays near-white
+     and legible. One fillText in fzCol made the whole line vanish into the
+     name's glow whenever the skill colour was dark. */
+  ctx.globalCompositeOperation='source-over';
+  const pips = '✦'.repeat(clamp(fzGrade,0,6));
+  const sub  = [fzRecipe, fzKind].filter(Boolean).join('  ·  ');
+  ctx.font = `800 ${ssz}px ui-sans-serif,system-ui,sans-serif`;
+  if('letterSpacing' in ctx) ctx.letterSpacing = `${Math.round(ssz*0.16)}px`;
+
+  const gy2 = cy + half*0.34;
+  const gap = ssz*0.9;
+  const wW  = ctx.measureText('FUSED').width;
+  const wP  = pips ? ctx.measureText(pips).width : 0;
+  const tot = wW + (pips ? (wP + gap)*2 : 0);
+  const lx  = VIEW.w/2 - tot/2;
+
+  ctx.textAlign = 'left';
+  if(pips){
+    ctx.globalAlpha = fade*0.9; ctx.fillStyle = fzColA;
+    ctx.fillText(pips, lx, gy2);
+    ctx.fillStyle = fzColB;
+    ctx.fillText(pips, lx + wP + gap + wW + gap, gy2);
+  }
+  ctx.globalAlpha = fade*0.95; ctx.fillStyle = '#eef2ff';
+  ctx.fillText('FUSED', lx + (pips ? wP + gap : 0), gy2);
+
+  ctx.textAlign = 'center';
+  ctx.globalAlpha = fade*0.7;
+  ctx.font = `600 ${Math.round(ssz*0.92)}px ui-sans-serif,system-ui,sans-serif`;
+  ctx.fillStyle = '#cdd6f5';
+  const subT = sub.toUpperCase();
+  /* recipes reach VOID · SHADOW · CONTROL · FIELD, so this line needs the same
+     measure-down treatment as the name */
+  const sfit = VIEW.w*0.86, swid = ctx.measureText(subT).width;
+  if(swid > sfit){
+    const z = Math.max(9, Math.floor(ssz*0.92 * sfit/swid));
+    if('letterSpacing' in ctx) ctx.letterSpacing = `${Math.round(z*0.16)}px`;
+    ctx.font = `600 ${z}px ui-sans-serif,system-ui,sans-serif`;
+  }
+  ctx.fillText(subT, VIEW.w/2, cy + half*0.72);
+  if('letterSpacing' in ctx) ctx.letterSpacing = '0px';
+
+  ctx.restore();
 }
 requestAnimationFrame(frame);
 

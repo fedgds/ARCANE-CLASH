@@ -954,6 +954,35 @@ const sfx = {
     this.tone(1319, 0.5, 'sine', 0.13, 1760, 0.12, {pan:p, wet:0.44});
   },
 
+  /* ── a fused cast ──
+     Layered ON TOP of the ordinary cast(), not instead of it: the cast is the
+     mechanical "a skill fired" and this is the weight on top, so the two
+     together read as the same event escalated rather than a different one.
+
+     Shape mirrors what the eye is doing (see fuseCast in battle-render.js):
+     a short rising sweep for the implosion, then a low thump and a long
+     sub-tail for the detonation, then a rising fifth-and-octave chord for
+     the rite — the same intervals as fuse() on the draft screen, so buying a
+     fusion and firing it are audibly the same family of moment.
+
+     Sends hard to the reverb. Along with crit() and nova() this is one of the
+     few sounds allowed to own the room, which is most of why it feels big. */
+  fuseCast(sk, x){
+    const p = this.panOf(x);
+    /* implosion: noise sweeping UP, the only rising sweep in the mix */
+    this.noise(0.26, 0.20, 300, 0.8, 0, {pan:p, wet:0.34, sweepTo:3200, cents:60});
+    /* detonation */
+    this.thump(rnd(74,58), 0.62, 0.30, {pan:p, wet:0.38});
+    this.noise(0.20, 0.42, 260, 0.55, 0.20, {pan:p, wet:0.44});
+    this.tone(96, 0.72, 'sawtooth', 0.24, 40, 0.20, {pan:p, wet:0.4, partial:1.5});
+    /* the rite: root, fifth, octave, tenth — pitched off GRADE so a ✦4 lands
+       a whole tone above a ✦1 and the ladder is audible across a run */
+    const base = 196 * Math.pow(1.06, (sk && sk.grade || 1) - 1);
+    [1, 1.5, 2, 2.5].forEach((m,i) =>
+      this.tone(base*m, 0.62, 'triangle', 0.17, null, 0.22 + i*0.05,
+        {pan:p, wet:0.5, partial:2, cents:20}));
+  },
+
   /* ═══ ambience ═══
      Battles used to be silent between events, which is the other half of why
      they read as monotonous — variation in the effects does nothing about

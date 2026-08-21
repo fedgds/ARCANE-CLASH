@@ -21,7 +21,19 @@
       "Bash(node /d/tmp/pairs.js)",
       "Bash(awk '/^const COMBOS = \\\\[/,/^\\\\];/' core.js)",
       "Bash(awk '/^const ASCENSIONS = \\\\[/,/^\\\\];/' pve-daily.js)",
-      "Bash(grep -oE \",[1-5]$\")"
+      "Bash(grep -oE \",[1-5]$\")",
+      "Bash(node --check battle-render.js)",
+      "Bash(node --check pve-daily.js)",
+      "Bash(node --check draft.js)",
+      "Bash(awk 'NR>=1934 && NR<=2400 && \\(/sk\\\\.id===/ || /} else if/ || /} else \\\\{/ || /── [A-Z]/\\)' battle-render.js)",
+      "Bash(awk -F: '$1>2100 && $1<2400')",
+      "Read(//d/tmp/shots/**)",
+      "Bash(cygpath -w /tmp/shots/magmavein-before.png)",
+      "Read(//c/tmp/**)",
+      "Bash(node -e \"console.log\\(require\\('fs'\\).readdirSync\\('/tmp/shots'\\)\\)\")",
+      "Bash(node -e \"console.log\\(require\\('path'\\).resolve\\('/tmp/shots/magmavein-before.png'\\)\\)\")",
+      "Bash(grep -n \"^function \\\\|^  function \\\\|^const .*=.*function\\\\|^/\\\\* ─\\\\|^/\\\\*\\\\* \" battle-render.js)",
+      "Bash(git -C D:/GIT/game diff --stat)"
     ]
   }
 }

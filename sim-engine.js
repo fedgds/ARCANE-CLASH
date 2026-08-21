@@ -956,7 +956,7 @@ class Sim {
         const dir = tgt.x >= src.x ? 1 : -1;
         tgt.x = clamp(tgt.x + dir*(sk.u||150), 120, ARENA_W-120);
         tgt.vx += dir*300;
-        this.emit('burst',{x:tgt.x,y:tgt.y-8,col:sk.col,n:14,pow:1.4,el:elemOf(sk)});
+        this.emit('burst',{x:tgt.x,y:tgt.y-8,col:sk.col,n:14,pow:1.4,el:elemOf(sk),sk});
         break;
       }
       /* Swap: trade the caster's and target's positions outright. */
@@ -964,8 +964,8 @@ class Sim {
         const tx = tgt.x, ty = tgt.y;
         tgt.x = clamp(src.x, 120, ARENA_W-120); tgt.y = clamp(src.y, 130, ARENA_H-90);
         src.x = clamp(tx, 120, ARENA_W-120);    src.y = clamp(ty, 130, ARENA_H-90);
-        this.emit('ghost',{x:tgt.x,y:tgt.y,col:sk.col,side:src.side,el:elemOf(sk)});
-        this.emit('ghost',{x:src.x,y:src.y,col:sk.col,side:tgt.side,el:elemOf(sk)});
+        this.emit('ghost',{x:tgt.x,y:tgt.y,col:sk.col,side:src.side,el:elemOf(sk),sk});
+        this.emit('ghost',{x:src.x,y:src.y,col:sk.col,side:tgt.side,el:elemOf(sk),sk});
         break;
       }
       /* Link: bind the struck enemy to its nearest ally so harm on one
@@ -1262,7 +1262,7 @@ class Sim {
             exec:sk.fx==='exec', pierce:sk.pierce, noVamp:a.noVamp,
             key:a.stolen ? a.stolenKey : sk.id});
           this.rider(sk,lvl,f,foe,dl);
-          this.emit('burst',{x:a.x,y:a.y,col:sk.col,n:a.basic?9:22,pow:a.basic?1:1.7,el:elemOf(sk)});
+          this.emit('burst',{x:a.x,y:a.y,col:sk.col,n:a.basic?9:22,pow:a.basic?1:1.7,el:elemOf(sk),sk});
           return false;
         }
         return true;
@@ -1273,7 +1273,7 @@ class Sim {
           a.next = a.per; a.left--;
           const dl = this.hit(f,foe,a.dmg,{col:sk.col,kind:'beam',key:sk.id});
           this.rider(sk,lvl,f,foe,dl);
-          this.emit('burst',{x:foe.x,y:foe.y-8,col:sk.col,n:14,pow:1.2,el:elemOf(sk)});
+          this.emit('burst',{x:foe.x,y:foe.y-8,col:sk.col,n:14,pow:1.2,el:elemOf(sk),sk});
         }
         return a.t < a.dur;
       }
@@ -1292,7 +1292,7 @@ class Sim {
             a.struck.add(tg);
             const dl = this.hit(f,tg,a.dmg,{col:sk.col,kind:'nova',key:sk.id});
             this.rider(sk,lvl,f,tg,dl);
-            this.emit('burst',{x:tg.x,y:tg.y-8,col:sk.col,n:26,pow:2,el:elemOf(sk)});
+            this.emit('burst',{x:tg.x,y:tg.y-8,col:sk.col,n:26,pow:2,el:elemOf(sk),sk});
           }
         }
         return a.t < 0.5;
@@ -1307,7 +1307,7 @@ class Sim {
             if(Math.hypot(dx,dy) < sk.reach && ang < sk.spread){
               const dl = this.hit(f,tg,a.dmg,{col:sk.col,kind:'cone',key:sk.id});
               this.rider(sk,lvl,f,tg,dl);
-              this.emit('burst',{x:tg.x,y:tg.y-8,col:sk.col,n:12,pow:1.3,el:elemOf(sk)});
+              this.emit('burst',{x:tg.x,y:tg.y-8,col:sk.col,n:12,pow:1.3,el:elemOf(sk),sk});
             }
           }
         }
@@ -1323,8 +1323,8 @@ class Sim {
               this.rider(sk,lvl,f,tg,dl);
             }
           }
-          this.emit('shock',{x:a.tx,y:a.ty,col:sk.col,r:96,el:elemOf(sk)});
-          this.emit('burst',{x:a.tx,y:a.ty,col:sk.col,n:30,pow:2.2,el:elemOf(sk)});
+          this.emit('shock',{x:a.tx,y:a.ty,col:sk.col,r:96,el:elemOf(sk),sk});
+          this.emit('burst',{x:a.tx,y:a.ty,col:sk.col,n:30,pow:2.2,el:elemOf(sk),sk});
         }
         return a.t < a.fall + 0.5;
       }
@@ -1337,7 +1337,7 @@ class Sim {
           for(const tg of inside){
             const dl = this.hit(f,tg,a.dmg,{col:sk.col,x:tg.x,y:tg.y,kind:'field',noCrit:a.left%2===1,key:sk.id});
             this.rider(sk,lvl,f,tg,dl);
-            this.emit('burst',{x:tg.x,y:tg.y-8,col:sk.col,n:10,pow:1.1,el:elemOf(sk)});
+            this.emit('burst',{x:tg.x,y:tg.y-8,col:sk.col,n:10,pow:1.1,el:elemOf(sk),sk});
           }
         }
         return a.t < a.dur;
@@ -1348,7 +1348,7 @@ class Sim {
           a.next = a.per; a.left--;
           if(dist(f,foe) < 340){
             this.hit(f,foe,a.dmg,{col:sk.col,kind:'orbit',key:sk.id});
-            this.emit('burst',{x:foe.x,y:foe.y-8,col:sk.col,n:12,pow:1.2,el:elemOf(sk)});
+            this.emit('burst',{x:foe.x,y:foe.y-8,col:sk.col,n:12,pow:1.2,el:elemOf(sk),sk});
           }
         }
         return a.t < a.dur;
@@ -1358,12 +1358,12 @@ class Sim {
         if(a.next<=0 && a.left>0){
           a.next = a.per; a.left--;
           const side = a.left%2 ? 1 : -1;
-          this.emit('ghost',{x:f.x,y:f.y,col:sk.col,side:f.side,el:elemOf(sk)});
+          this.emit('ghost',{x:f.x,y:f.y,col:sk.col,side:f.side,el:elemOf(sk),sk});
           f.x = clamp(foe.x + side*62, 120, ARENA_W-120);
           f.y = clamp(foe.y + RNG.r(30,-30), 130, ARENA_H-90);
           const dl = this.hit(f,foe,a.dmg,{col:sk.col,kind:'slash',key:sk.id});
           this.rider(sk,lvl,f,foe,dl);
-          this.emit('slash',{x:foe.x,y:foe.y-8,col:sk.col,ang:rnd(TAU),el:elemOf(sk)});
+          this.emit('slash',{x:foe.x,y:foe.y-8,col:sk.col,ang:rnd(TAU),el:elemOf(sk),sk});
         }
         return a.left>0 || a.t < 0.4;
       }
